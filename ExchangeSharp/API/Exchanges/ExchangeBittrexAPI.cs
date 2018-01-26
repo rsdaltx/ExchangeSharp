@@ -69,14 +69,6 @@ namespace ExchangeSharp
             return order;
         }
 
-        private Dictionary<string, object> GetNoncePayload()
-        {
-            return new Dictionary<string, object>
-            {
-                { "nonce", DateTime.UtcNow.Ticks }
-            };
-        }
-
         protected override Uri ProcessRequestUrl(UriBuilder url, Dictionary<string, object> payload)
         {
             if (CanMakeAuthenticatedRequest(payload))
@@ -241,7 +233,7 @@ namespace ExchangeSharp
                 {
                     break;
                 }
-                System.Threading.Thread.Sleep(1000);
+                Task.Delay(1000).Wait();
             }
         }
 
@@ -251,8 +243,7 @@ namespace ExchangeSharp
             string baseUrl = "/public/getmarkethistory?market=" + symbol;
             JObject obj = MakeJsonRequest<JObject>(baseUrl);
             JToken result = CheckError(obj);
-            JArray array = result as JArray;
-            if (array != null && array.Count != 0)
+            if (result is JArray array && array.Count != 0)
             {
                 foreach (JToken token in array)
                 {
@@ -298,25 +289,27 @@ namespace ExchangeSharp
             startDate = startDate ?? endDate.Value.Subtract(TimeSpan.FromDays(1.0));
             JToken result = MakeJsonRequest<JToken>("pub/market/GetTicks?marketName=" + symbol + "&tickInterval=" + periodString, BaseUrl2);
             result = CheckError(result);
-            JArray array = result as JArray;
-            foreach (JToken jsonCandle in array)
+            if (result is JArray array)
             {
-                MarketCandle candle = new MarketCandle
+                foreach (JToken jsonCandle in array)
                 {
-                    ClosePrice = (decimal)jsonCandle["C"],
-                    ExchangeName = Name,
-                    HighPrice = (decimal)jsonCandle["H"],
-                    LowPrice = (decimal)jsonCandle["L"],
-                    Name = symbol,
-                    OpenPrice = (decimal)jsonCandle["O"],
-                    PeriodSeconds = periodSeconds,
-                    Timestamp = (DateTime)jsonCandle["T"],
-                    VolumePrice = (double)jsonCandle["BV"],
-                    VolumeQuantity = (double)jsonCandle["V"]
-                };
-                if (candle.Timestamp >= startDate && candle.Timestamp <= endDate)
-                {
-                    yield return candle;
+                    MarketCandle candle = new MarketCandle
+                    {
+                        ClosePrice = (decimal)jsonCandle["C"],
+                        ExchangeName = Name,
+                        HighPrice = (decimal)jsonCandle["H"],
+                        LowPrice = (decimal)jsonCandle["L"],
+                        Name = symbol,
+                        OpenPrice = (decimal)jsonCandle["O"],
+                        PeriodSeconds = periodSeconds,
+                        Timestamp = (DateTime)jsonCandle["T"],
+                        VolumePrice = (double)jsonCandle["BV"],
+                        VolumeQuantity = (double)jsonCandle["V"]
+                    };
+                    if (candle.Timestamp >= startDate && candle.Timestamp <= endDate)
+                    {
+                        yield return candle;
+                    }
                 }
             }
         }
@@ -364,11 +357,12 @@ namespace ExchangeSharp
         public override ExchangeOrderResult PlaceOrder(string symbol, decimal amount, decimal price, bool buy)
         {
             symbol = NormalizeSymbol(symbol);
-            string url = (buy ? "/market/buylimit" : "/market/selllimit") + "?market=" + symbol + "&quantity=" + amount + "&rate=" + price;
+            string url = (buy ? "/market/buylimit" : "/market/selllimit") + "?market=" + symbol + "&quantity=" +
+                RoundAmount(amount).ToString(CultureInfo.InvariantCulture.NumberFormat) + "&rate=" + price.ToString(CultureInfo.InvariantCulture.NumberFormat);
             JObject obj = MakeJsonRequest<JObject>(url, null, GetNoncePayload());
             JToken result = CheckError(obj);
             string orderId = result["uuid"].Value<string>();
-            return GetOrderDetails(orderId);
+            return new ExchangeOrderResult { Amount = amount, IsBuy = buy, OrderDate = DateTime.UtcNow, OrderId = orderId, Result = ExchangeAPIOrderResult.Pending, Symbol = symbol };
         }
 
         public override ExchangeOrderResult GetOrderDetails(string orderId)

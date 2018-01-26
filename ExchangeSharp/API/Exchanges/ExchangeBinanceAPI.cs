@@ -41,135 +41,22 @@ namespace ExchangeSharp
             return symbol;
         }
 
-        private void CheckError(JToken result)
+        public ExchangeBinanceAPI()
         {
-            if (result != null && !(result is JArray) && result["status"] != null && result["code"] != null)
-            {
-                throw new APIException(result["code"].Value<string>() + ": " + (result["msg"] != null ? result["msg"].Value<string>() : "Unknown Error"));
-            }
-        }
-
-        private ExchangeTicker ParseTicker(string symbol, JToken token)
-        {
-            // {"priceChange":"-0.00192300","priceChangePercent":"-4.735","weightedAvgPrice":"0.03980955","prevClosePrice":"0.04056700","lastPrice":"0.03869000","lastQty":"0.69300000","bidPrice":"0.03858500","bidQty":"38.35000000","askPrice":"0.03869000","askQty":"31.90700000","openPrice":"0.04061300","highPrice":"0.04081900","lowPrice":"0.03842000","volume":"128015.84300000","quoteVolume":"5096.25362239","openTime":1512403353766,"closeTime":1512489753766,"firstId":4793094,"lastId":4921546,"count":128453}
-            return new ExchangeTicker
-            {
-                Ask = (decimal)token["askPrice"],
-                Bid = (decimal)token["bidPrice"],
-                Last = (decimal)token["lastPrice"],
-                Volume = new ExchangeVolume
-                {
-                    PriceAmount = (decimal)token["volume"],
-                    PriceSymbol = symbol,
-                    QuantityAmount = (decimal)token["quoteVolume"],
-                    QuantitySymbol = symbol,
-                    Timestamp = CryptoUtility.UnixTimeStampToDateTimeMilliseconds((long)token["closeTime"])
-                }
-            };
-        }
-
-        private ExchangeOrderBook ParseOrderBook(JToken token)
-        {
-            ExchangeOrderBook book = new ExchangeOrderBook();
-            foreach (JArray array in token["bids"])
-            {
-                book.Bids.Add(new ExchangeOrderPrice { Price = (decimal)array[0], Amount = (decimal)array[1] });
-            }
-            foreach (JArray array in token["asks"])
-            {
-                book.Asks.Add(new ExchangeOrderPrice { Price = (decimal)array[0], Amount = (decimal)array[1] });
-            }
-            return book;
-        }
-
-        private Dictionary<string, object> GetNoncePayload()
-        {
-            return new Dictionary<string, object>
-            {
-                { "nonce", ((long)DateTime.UtcNow.UnixTimestampFromDateTimeMilliseconds()).ToString() }
-            };
-        }
-
-        private ExchangeOrderResult ParseOrder(JToken token)
-        {
-            /*
-              "symbol": "IOTABTC",
-              "orderId": 1,
-              "clientOrderId": "abABsrARGZfl5wwdkYrsx1",
-              "transactTime": 1510629334993,
-              "price": "1.00000000",
-              "origQty": "1.00000000",
-              "executedQty": "0.00000000",
-              "status": "NEW",
-              "timeInForce": "GTC",
-              "type": "LIMIT",
-              "side": "SELL"
-            */
-            ExchangeOrderResult result = new ExchangeOrderResult
-            {
-                Amount = (decimal)token["origQty"],
-                AmountFilled = (decimal)token["executedQty"],
-                AveragePrice = (decimal)token["price"],
-                IsBuy = (string)token["side"] == "BUY",
-                OrderDate = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(token["time"] == null ? (long)token["transactTime"] : (long)token["time"]),
-                OrderId = (string)token["orderId"],
-                Symbol = (string)token["symbol"]
-            };
-            switch ((string)token["status"])
-            {
-                case "NEW":
-                    result.Result = ExchangeAPIOrderResult.Pending;
-                    break;
-
-                case "PARTIALLY_FILLED":
-                    result.Result = ExchangeAPIOrderResult.FilledPartially;
-                    break;
-
-                case "FILLED":
-                    result.Result = ExchangeAPIOrderResult.Filled;
-                    break;
-
-                case "CANCELED":
-                case "PENDING_CANCEL":
-                case "EXPIRED":
-                case "REJECTED":
-                    result.Result = ExchangeAPIOrderResult.Canceled;
-                    break;
-
-                default:
-                    result.Result = ExchangeAPIOrderResult.Error;
-                    break;
-            }
-            return result;
-        }
-
-        protected override void ProcessRequest(HttpWebRequest request, Dictionary<string, object> payload)
-        {
-            if (CanMakeAuthenticatedRequest(payload))
-            {
-                request.Headers["X-MBX-APIKEY"] = PublicApiKey.ToUnsecureString();
-            }
-        }
-
-        protected override Uri ProcessRequestUrl(UriBuilder url, Dictionary<string, object> payload)
-        {
-            if (CanMakeAuthenticatedRequest(payload))
-            {
-                // payload is ignored, except for the nonce which is added to the url query - bittrex puts all the "post" parameters in the url query instead of the request body
-                var query = HttpUtility.ParseQueryString(url.Query);
-                string newQuery = "timestamp=" + payload["nonce"].ToString() + (query.Count == 0 ? string.Empty : "&" + query.ToString()) +
-                    (payload.Count > 1 ? "&" + GetFormForPayload(payload, false) : string.Empty);
-                string signature = CryptoUtility.SHA256Sign(newQuery, CryptoUtility.SecureStringToBytes(PrivateApiKey));
-                newQuery += "&signature=" + signature;
-                url.Query = newQuery;
-                return url.Uri;
-            }
-            return base.ProcessRequestUrl(url, payload);
+            // give binance plenty of room to accept requests
+            RequestWindow = TimeSpan.FromMinutes(15.0);
+            NonceStyle = NonceStyle.UnixMilliseconds;
+            NonceOffset = TimeSpan.FromSeconds(1.0);
         }
 
         public override IEnumerable<string> GetSymbols()
         {
-            List<string> symbols = new List<string>();
+            if (ReadCache("GetSymbols", out List<string> symbols))
+            {
+                return symbols;
+            }
+
+            symbols = new List<string>();
             JToken obj = MakeJsonRequest<JToken>("/ticker/allPrices");
             CheckError(obj);
             foreach (JToken token in obj)
@@ -181,6 +68,7 @@ namespace ExchangeSharp
                     symbols.Add(symbol);
                 }
             }
+            WriteCache("GetSymbols", TimeSpan.FromMinutes(60.0), symbols);
             return symbols;
         }
 
@@ -194,8 +82,14 @@ namespace ExchangeSharp
 
         public override IEnumerable<KeyValuePair<string, ExchangeTicker>> GetTickers()
         {
-            // TODO: I put in a support request to add a symbol field to https://www.binance.com/api/v1/ticker/24hr, until then multi tickers in one request is not supported
-            return base.GetTickers();
+            string symbol;
+            JToken obj = MakeJsonRequest<JToken>("/ticker/24hr");
+            CheckError(obj);
+            foreach (JToken child in obj)
+            {
+                symbol = child["symbol"].ToString();
+                yield return new KeyValuePair<string, ExchangeTicker>(symbol, ParseTicker(symbol, child));
+            }
         }
 
         public override ExchangeOrderBook GetOrderBook(string symbol, int maxCount = 100)
@@ -268,7 +162,7 @@ namespace ExchangeSharp
                 {
                     break;
                 }
-                System.Threading.Thread.Sleep(1000);
+                Task.Delay(1000).Wait();
             }
         }
 
@@ -294,9 +188,9 @@ namespace ExchangeSharp
             string url = "/klines?symbol=" + symbol;
             if (startDate != null)
             {
-                url += "&startTime=" + (long)startDate.Value.UnixTimestampFromDateTimeSeconds();
+                url += "&startTime=" + (long)startDate.Value.UnixTimestampFromDateTimeMilliseconds();
             }
-            url += "&endTime=" + (endDate == null ? long.MaxValue : (long)endDate.Value.UnixTimestampFromDateTimeSeconds());
+            url += "&endTime=" + (endDate == null ? long.MaxValue : (long)endDate.Value.UnixTimestampFromDateTimeMilliseconds());
             string periodString = CryptoUtility.SecondsToPeriodString(periodSeconds);
             url += "&interval=" + periodString;
             JToken obj = MakeJsonRequest<JToken>(url);
@@ -327,7 +221,11 @@ namespace ExchangeSharp
             Dictionary<string, decimal> balances = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
             foreach (JToken balance in token["balances"])
             {
-                balances[(string)balance["asset"]] = (decimal)balance["free"] + (decimal)balance["locked"];
+                decimal amount = (decimal)balance["free"] + (decimal)balance["locked"];
+                if (amount > 0m)
+                {
+                    balances[(string)balance["asset"]] = amount;
+                }
             }
             return balances;
         }
@@ -339,7 +237,11 @@ namespace ExchangeSharp
             Dictionary<string, decimal> balances = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
             foreach (JToken balance in token["balances"])
             {
-                balances[(string)balance["asset"]] = (decimal)balance["free"];
+                decimal amount = (decimal)balance["free"];
+                if (amount > 0m)
+                {
+                    balances[(string)balance["asset"]] = amount;
+                }
             }
             return balances;
         }
@@ -351,7 +253,7 @@ namespace ExchangeSharp
             payload["symbol"] = symbol;
             payload["side"] = (buy ? "BUY" : "SELL");
             payload["type"] = "LIMIT";
-            payload["quantity"] = amount;
+            payload["quantity"] = RoundAmount(amount);
             payload["price"] = price;
             payload["timeInForce"] = "GTC";
             JToken token = MakeJsonRequest<JToken>("/order", BaseUrlPrivate, payload, "POST");
@@ -359,11 +261,6 @@ namespace ExchangeSharp
             return ParseOrder(token);
         }
 
-        /// <summary>
-        /// Binance is really bad here, you have to pass the symbol and the orderId, WTF...
-        /// </summary>
-        /// <param name="orderId">Symbol,OrderId</param>
-        /// <returns>Order details</returns>
         public override ExchangeOrderResult GetOrderDetails(string orderId)
         {
             Dictionary<string, object> payload = GetNoncePayload();
@@ -379,19 +276,107 @@ namespace ExchangeSharp
             return ParseOrder(token);
         }
 
+        private IEnumerable<ExchangeOrderResult> GetOpenOrderDetailsForAllSymbols()
+        {
+            // TODO: This is a HACK, Binance API needs to add a single API call to get all orders for all symbols, terrible...
+            List<ExchangeOrderResult> orders = new List<ExchangeOrderResult>();
+            Exception ex = null;
+            string failedSymbol = null;
+            Parallel.ForEach(GetSymbols().Where(s => s.IndexOf("BTC", StringComparison.OrdinalIgnoreCase) >= 0), (s) =>
+            {
+                try
+                {
+                    foreach (ExchangeOrderResult order in GetOpenOrderDetails(s))
+                    {
+                        lock (orders)
+                        {
+                            orders.Add(order);
+                        }
+                    }
+                }
+                catch (Exception _ex)
+                {
+                    failedSymbol = s;
+                    ex = _ex;
+                }
+            });
+
+            if (ex != null)
+            {
+                throw new APIException("Failed to get open orders for symbol " + failedSymbol, ex);
+            }
+
+            // sort timestamp desc
+            orders.Sort((o1, o2) =>
+            {
+                return o2.OrderDate.CompareTo(o1.OrderDate);
+            });
+            foreach (ExchangeOrderResult order in orders)
+            {
+                yield return order;
+            }
+        }
+
         public override IEnumerable<ExchangeOrderResult> GetOpenOrderDetails(string symbol = null)
         {
             if (string.IsNullOrWhiteSpace(symbol))
             {
-                throw new InvalidOperationException("Binance order details request requires the symbol parameter. I am sorry for this, I cannot control their API implementation which is really bad here.");
+                foreach (ExchangeOrderResult order in GetOpenOrderDetailsForAllSymbols())
+                {
+                    yield return order;
+                }
             }
-            Dictionary<string, object> payload = GetNoncePayload();
-            payload["symbol"] = NormalizeSymbol(symbol);
-            JToken token = MakeJsonRequest<JToken>("/openOrders", BaseUrlPrivate, payload);
-            CheckError(token);
-            foreach (JToken order in token)
+            else
             {
-                yield return ParseOrder(order);
+                Dictionary<string, object> payload = GetNoncePayload();
+                payload["symbol"] = NormalizeSymbol(symbol);
+                JToken token = MakeJsonRequest<JToken>("/openOrders", BaseUrlPrivate, payload);
+                CheckError(token);
+                foreach (JToken order in token)
+                {
+                    yield return ParseOrder(order);
+                }
+            }
+        }
+
+        private IEnumerable<ExchangeOrderResult> GetCompletedOrdersForAllSymbols(DateTime? afterDate)
+        {
+            // TODO: This is a HACK, Binance API needs to add a single API call to get all orders for all symbols, terrible...
+            List<ExchangeOrderResult> orders = new List<ExchangeOrderResult>();
+            Exception ex = null;
+            string failedSymbol = null;
+            Parallel.ForEach(GetSymbols().Where(s => s.IndexOf("BTC", StringComparison.OrdinalIgnoreCase) >= 0), (s) =>
+            {
+                try
+                {
+                    foreach (ExchangeOrderResult order in GetCompletedOrderDetails(s, afterDate))
+                    {
+                        lock (orders)
+                        {
+                            orders.Add(order);
+                        }
+                    }
+                }
+                catch (Exception _ex)
+                {
+                    failedSymbol = s;
+                    ex = _ex;
+                }
+            });
+
+            if (ex != null)
+            {
+                throw new APIException("Failed to get completed order details for symbol " + failedSymbol, ex);
+            }
+
+            // sort timestamp desc
+            orders.Sort((o1, o2) =>
+            {
+                return o2.OrderDate.CompareTo(o1.OrderDate);
+            });
+            foreach (ExchangeOrderResult order in orders)
+            {
+                yield return order;
             }
         }
 
@@ -399,19 +384,26 @@ namespace ExchangeSharp
         {
             if (string.IsNullOrWhiteSpace(symbol))
             {
-                throw new InvalidOperationException("Binance order details request requires the symbol parameter. I am sorry for this, I cannot control their API implementation which is really bad here.");
+                foreach (ExchangeOrderResult order in GetCompletedOrdersForAllSymbols(afterDate))
+                {
+                    yield return order;
+                }
             }
-            Dictionary<string, object> payload = GetNoncePayload();
-            payload["symbol"] = NormalizeSymbol(symbol);
-            if (afterDate != null)
+            else
             {
-                payload["timestamp"] = afterDate.Value.UnixTimestampFromDateTimeMilliseconds();
-            }
-            JToken token = MakeJsonRequest<JToken>("/allOrders", BaseUrlPrivate, payload);
-            CheckError(token);
-            foreach (JToken order in token)
-            {
-                yield return ParseOrder(order);
+                Dictionary<string, object> payload = GetNoncePayload();
+                payload["symbol"] = NormalizeSymbol(symbol);
+                if (afterDate != null)
+                {
+                    // TODO: timestamp param is causing duplicate request errors which is a bug in the Binance API
+                    // payload["timestamp"] = afterDate.Value.UnixTimestampFromDateTimeMilliseconds();
+                }
+                JToken token = MakeJsonRequest<JToken>("/allOrders", BaseUrlPrivate, payload);
+                CheckError(token);
+                foreach (JToken order in token)
+                {
+                    yield return ParseOrder(order);
+                }
             }
         }
 
@@ -427,6 +419,124 @@ namespace ExchangeSharp
             payload["orderId"] = pieces[1];
             JToken token = MakeJsonRequest<JToken>("/order", BaseUrlPrivate, payload, "DELETE");
             CheckError(token);
+        }
+
+        private void CheckError(JToken result)
+        {
+            if (result != null && !(result is JArray) && result["status"] != null && result["code"] != null)
+            {
+                throw new APIException(result["code"].Value<string>() + ": " + (result["msg"] != null ? result["msg"].Value<string>() : "Unknown Error"));
+            }
+        }
+
+        private ExchangeTicker ParseTicker(string symbol, JToken token)
+        {
+            // {"priceChange":"-0.00192300","priceChangePercent":"-4.735","weightedAvgPrice":"0.03980955","prevClosePrice":"0.04056700","lastPrice":"0.03869000","lastQty":"0.69300000","bidPrice":"0.03858500","bidQty":"38.35000000","askPrice":"0.03869000","askQty":"31.90700000","openPrice":"0.04061300","highPrice":"0.04081900","lowPrice":"0.03842000","volume":"128015.84300000","quoteVolume":"5096.25362239","openTime":1512403353766,"closeTime":1512489753766,"firstId":4793094,"lastId":4921546,"count":128453}
+            return new ExchangeTicker
+            {
+                Ask = (decimal)token["askPrice"],
+                Bid = (decimal)token["bidPrice"],
+                Last = (decimal)token["lastPrice"],
+                Volume = new ExchangeVolume
+                {
+                    PriceAmount = (decimal)token["volume"],
+                    PriceSymbol = symbol,
+                    QuantityAmount = (decimal)token["quoteVolume"],
+                    QuantitySymbol = symbol,
+                    Timestamp = CryptoUtility.UnixTimeStampToDateTimeMilliseconds((long)token["closeTime"])
+                }
+            };
+        }
+
+        private ExchangeOrderBook ParseOrderBook(JToken token)
+        {
+            ExchangeOrderBook book = new ExchangeOrderBook();
+            foreach (JArray array in token["bids"])
+            {
+                book.Bids.Add(new ExchangeOrderPrice { Price = (decimal)array[0], Amount = (decimal)array[1] });
+            }
+            foreach (JArray array in token["asks"])
+            {
+                book.Asks.Add(new ExchangeOrderPrice { Price = (decimal)array[0], Amount = (decimal)array[1] });
+            }
+            return book;
+        }
+
+        private ExchangeOrderResult ParseOrder(JToken token)
+        {
+            /*
+              "symbol": "IOTABTC",
+              "orderId": 1,
+              "clientOrderId": "12345",
+              "transactTime": 1510629334993,
+              "price": "1.00000000",
+              "origQty": "1.00000000",
+              "executedQty": "0.00000000",
+              "status": "NEW",
+              "timeInForce": "GTC",
+              "type": "LIMIT",
+              "side": "SELL"
+            */
+            ExchangeOrderResult result = new ExchangeOrderResult
+            {
+                Amount = (decimal)token["origQty"],
+                AmountFilled = (decimal)token["executedQty"],
+                AveragePrice = (decimal)token["price"],
+                IsBuy = (string)token["side"] == "BUY",
+                OrderDate = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(token["time"] == null ? (long)token["transactTime"] : (long)token["time"]),
+                OrderId = (string)token["orderId"],
+                Symbol = (string)token["symbol"]
+            };
+            switch ((string)token["status"])
+            {
+                case "NEW":
+                    result.Result = ExchangeAPIOrderResult.Pending;
+                    break;
+
+                case "PARTIALLY_FILLED":
+                    result.Result = ExchangeAPIOrderResult.FilledPartially;
+                    break;
+
+                case "FILLED":
+                    result.Result = ExchangeAPIOrderResult.Filled;
+                    break;
+
+                case "CANCELED":
+                case "PENDING_CANCEL":
+                case "EXPIRED":
+                case "REJECTED":
+                    result.Result = ExchangeAPIOrderResult.Canceled;
+                    break;
+
+                default:
+                    result.Result = ExchangeAPIOrderResult.Error;
+                    break;
+            }
+            return result;
+        }
+
+        protected override void ProcessRequest(HttpWebRequest request, Dictionary<string, object> payload)
+        {
+            if (CanMakeAuthenticatedRequest(payload))
+            {
+                request.Headers["X-MBX-APIKEY"] = PublicApiKey.ToUnsecureString();
+            }
+        }
+
+        protected override Uri ProcessRequestUrl(UriBuilder url, Dictionary<string, object> payload)
+        {
+            if (CanMakeAuthenticatedRequest(payload))
+            {
+                // payload is ignored, except for the nonce which is added to the url query - bittrex puts all the "post" parameters in the url query instead of the request body
+                var query = HttpUtility.ParseQueryString(url.Query);
+                string newQuery = "timestamp=" + payload["nonce"].ToString() + (query.Count == 0 ? string.Empty : "&" + query.ToString()) +
+                    (payload.Count > 1 ? "&" + GetFormForPayload(payload, false) : string.Empty);
+                string signature = CryptoUtility.SHA256Sign(newQuery, CryptoUtility.SecureStringToBytes(PrivateApiKey));
+                newQuery += "&signature=" + signature;
+                url.Query = newQuery;
+                return url.Uri;
+            }
+            return base.ProcessRequestUrl(url, payload);
         }
     }
 }

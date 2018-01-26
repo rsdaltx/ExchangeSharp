@@ -31,6 +31,12 @@ namespace ExchangeSharp
         public string BaseUrlV1 { get; set; } = "https://api.bitfinex.com/v1";
         public override string Name => ExchangeName.Bitfinex;
 
+        public ExchangeBitfinexAPI()
+        {
+            NonceStyle = NonceStyle.UnixMillisecondsString;
+            RateLimit = new RateGate(1, TimeSpan.FromSeconds(6.0));
+        }
+
         public override string NormalizeSymbol(string symbol)
         {
             return symbol?.Replace("-", string.Empty).ToUpperInvariant();
@@ -65,9 +71,8 @@ namespace ExchangeSharp
                 {
                     if (symbol == null || (string)token[1] == "t" + symbol.ToUpperInvariant())
                     {
-                        List<JToken> tradeList;
                         string lookup = ((string)token[1]).Substring(1).ToLowerInvariant();
-                        if (!trades.TryGetValue(lookup, out tradeList))
+                        if (!trades.TryGetValue(lookup, out List<JToken> tradeList))
                         {
                             tradeList = trades[lookup] = new List<JToken>();
                         }
@@ -227,7 +232,7 @@ namespace ExchangeSharp
                 {
                     break;
                 }
-                System.Threading.Thread.Sleep(5000);
+                Task.Delay(5000).Wait();
             }
         }
 
@@ -305,8 +310,8 @@ namespace ExchangeSharp
             symbol = NormalizeSymbolV1(symbol);
             Dictionary<string, object> payload = GetNoncePayload();
             payload["symbol"] = symbol;
-            payload["amount"] = amount.ToString(CultureInfo.InvariantCulture.NumberFormat);
-            payload["price"] = price.ToString();
+            payload["amount"] = RoundAmount(amount).ToString(CultureInfo.InvariantCulture.NumberFormat);
+            payload["price"] = price.ToString(CultureInfo.InvariantCulture.NumberFormat);
             payload["side"] = (buy ? "buy" : "sell");
             payload["type"] = "exchange limit";
             JToken obj = MakeJsonRequest<JToken>("/order/new", BaseUrlV1, payload);
@@ -340,6 +345,8 @@ namespace ExchangeSharp
             {
                 if (string.IsNullOrWhiteSpace(symbol))
                 {
+                    // HACK: Bitfinex does not provide a way to get all historical order details beyond a few days in one call, so we have to
+                    //  get the historical details one by one for each symbol.
                     var symbols = GetSymbols().Where(s => s.IndexOf("usd", StringComparison.OrdinalIgnoreCase) < 0 && s.IndexOf("btc", StringComparison.OrdinalIgnoreCase) >= 0);
                     orders = GetOrderDetailsInternalV1(symbols, afterDate).ToArray();
                 }
@@ -391,7 +398,8 @@ namespace ExchangeSharp
                 payload["limit_trades"] = 250;
                 if (afterDate != null)
                 {
-                    payload["timestamp"] = afterDate.Value.UnixTimestampFromDateTimeMilliseconds().ToString();
+                    payload["timestamp"] = afterDate.Value.UnixTimestampFromDateTimeSeconds().ToString(CultureInfo.InvariantCulture);
+                    payload["until"] = DateTime.UtcNow.UnixTimestampFromDateTimeSeconds().ToString(CultureInfo.InvariantCulture);
                 }
                 JToken token = MakeJsonRequest<JToken>("/mytrades", BaseUrlV1, payload);
                 CheckError(token);
@@ -412,12 +420,6 @@ namespace ExchangeSharp
                 }
             }
             return orders.Values.OrderByDescending(o => o.OrderDate);
-        }
-
-        private Dictionary<string, object> GetNoncePayload()
-        {
-            //return new Dictionary<string, object> { { "nonce", DateTime.UtcNow.Ticks.ToString() } };
-            return new Dictionary<string, object> { { "nonce", ((long)DateTime.UtcNow.UnixTimestampFromDateTimeMilliseconds()).ToString() } };
         }
 
         private void CheckError(JToken result)

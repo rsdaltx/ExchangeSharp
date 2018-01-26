@@ -44,14 +44,6 @@ namespace ExchangeSharp
             }
         }
 
-        private Dictionary<string, object> GetNoncePayload()
-        {
-            return new Dictionary<string, object>
-            {
-                { "nonce", DateTime.UtcNow.Ticks }
-            };
-        }
-
         private void CheckError(JToken result)
         {
             if (result != null && !(result is JArray) && result["error"] != null)
@@ -295,7 +287,7 @@ namespace ExchangeSharp
                 {
                     break;
                 }
-                System.Threading.Thread.Sleep(2000);
+                Task.Delay(2000).Wait();
             }
         }
 
@@ -370,7 +362,8 @@ namespace ExchangeSharp
         public override ExchangeOrderResult PlaceOrder(string symbol, decimal amount, decimal price, bool buy)
         {
             symbol = NormalizeSymbol(symbol);
-            JToken result = MakePrivateAPIRequest(buy ? "buy" : "sell", "currencyPair", symbol, "rate", price, "amount", amount);
+            JToken result = MakePrivateAPIRequest(buy ? "buy" : "sell", "currencyPair", symbol, "rate",
+                price.ToString(CultureInfo.InvariantCulture.NumberFormat), "amount", RoundAmount(amount).ToString(CultureInfo.InvariantCulture.NumberFormat));
             return ParseOrder(result);
         }
 
@@ -382,9 +375,22 @@ namespace ExchangeSharp
                 symbol = "all";
             }
             JToken result;
-            result = MakePrivateAPIRequest("getOpenOrders", "currencyPair", symbol);
+            result = MakePrivateAPIRequest("returnOpenOrders", "currencyPair", symbol);
             CheckError(result);
-            if (result is JArray array)
+            if (symbol == "all")
+            {
+                foreach (JProperty prop in result)
+                {
+                    if (prop.Value is JArray array)
+                    {
+                        foreach (JToken token in array)
+                        {
+                            yield return ParseOrder(token);
+                        }
+                    }
+                }
+            }
+            else if (result is JArray array)
             {
                 foreach (JToken token in array)
                 {
