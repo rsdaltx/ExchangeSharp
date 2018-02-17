@@ -12,12 +12,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
 using System.Linq;
-using System.Net;
-using System.Security;
-using System.Text;
 using System.Threading.Tasks;
 
 using Newtonsoft.Json;
@@ -42,29 +37,6 @@ namespace ExchangeSharp
                 ExchangeAPI api = Activator.CreateInstance(type) as ExchangeAPI;
                 apis[api.Name] = api;
             }
-        }
-
-        /// <summary>
-        /// Round an amount appropriate to its quantity
-        /// </summary>
-        /// <param name="amount">Amount</param>
-        /// <returns>Rounded amount</returns>
-        /// <remarks>
-        /// Less than 1 : 7 decimal places
-        /// Less than 10 : 3 decimal places
-        /// Everything else : floor, no decimal places
-        /// </remarks>
-        public static decimal RoundAmount(decimal amount)
-        {
-            if (amount < 1.0m)
-            {
-                return Math.Round(amount, 7);
-            }
-            else if (amount < 10.0m)
-            {
-                return Math.Round(amount, 3);
-            }
-            return Math.Floor(amount);
         }
 
         /// <summary>
@@ -133,6 +105,16 @@ namespace ExchangeSharp
         /// <param name="symbol">Symbol to get ticker for</param>
         /// <returns>Ticker</returns>
         public Task<ExchangeTicker> GetTickerAsync(string symbol) => Task.Factory.StartNew(() => GetTicker(symbol));
+
+        /// <summary>
+        /// Get all tickers via web socket
+        /// </summary>
+        /// <param name="tickers">Callback</param>
+        /// <returns>Web socket, call Dispose to close</returns>
+        public virtual IDisposable GetTickersWebSocket(System.Action<IReadOnlyCollection<KeyValuePair<string, ExchangeTicker>>> tickers)
+        {
+            throw new NotImplementedException();
+        }
 
         /// <summary>
         /// Get all tickers. If the exchange does not support this, a ticker will be requested for each symbol.
@@ -222,21 +204,23 @@ namespace ExchangeSharp
         /// Get candles (open, high, low, close)
         /// </summary>
         /// <param name="symbol">Symbol to get candles for</param>
-        /// <param name="periodsSeconds">Period in seconds to get candles for. Use 60 for minute, 3600 for hour, 3600*24 for day, 3600*24*30 for month.</param>
+        /// <param name="periodSeconds">Period in seconds to get candles for. Use 60 for minute, 3600 for hour, 3600*24 for day, 3600*24*30 for month.</param>
         /// <param name="startDate">Optional start date to get candles for</param>
         /// <param name="endDate">Optional end date to get candles for</param>
+        /// <param name="limit">Max results, can be used instead of startDate and endDate if desired</param>
         /// <returns>Candles</returns>
-        public virtual IEnumerable<MarketCandle> GetCandles(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null) { throw new NotSupportedException(); }
+        public virtual IEnumerable<MarketCandle> GetCandles(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null, int? limit = null) { throw new NotSupportedException(); }
 
         /// <summary>
         /// ASYNC - Get candles (open, high, low, close)
         /// </summary>
         /// <param name="symbol">Symbol to get candles for</param>
-        /// <param name="periodsSeconds">Period in seconds to get candles for. Use 60 for minute, 3600 for hour, 3600*24 for day, 3600*24*30 for month.</param>
+        /// <param name="periodSeconds">Period in seconds to get candles for. Use 60 for minute, 3600 for hour, 3600*24 for day, 3600*24*30 for month.</param>
         /// <param name="startDate">Optional start date to get candles for</param>
         /// <param name="endDate">Optional end date to get candles for</param>
+        /// <param name="limit">Max results, can be used instead of startDate and endDate if desired</param>
         /// <returns>Candles</returns>
-        public Task<IEnumerable<MarketCandle>> GetCandlesAsync(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null) => Task.Factory.StartNew(() => GetCandles(symbol, periodSeconds, startDate, endDate));
+        public Task<IEnumerable<MarketCandle>> GetCandlesAsync(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null, int? limit = null) => Task.Factory.StartNew(() => GetCandles(symbol, periodSeconds, startDate, endDate, limit));
 
         /// <summary>
         /// Get total amounts, symbol / amount dictionary
@@ -263,24 +247,18 @@ namespace ExchangeSharp
         public Task<Dictionary<string, decimal>> GetAmountsAvailableToTradeAsync() => Task.Factory.StartNew<Dictionary<string, decimal>>(() => GetAmountsAvailableToTrade());
 
         /// <summary>
-        /// Place a limit order
+        /// Place an order
         /// </summary>
-        /// <param name="symbol">Symbol</param>
-        /// <param name="amount">Amount</param>
-        /// <param name="price">Price</param>
-        /// <param name="buy">True to buy, false to sell</param>
+        /// <param name="order">The order request</param>
         /// <returns>Result</returns>
-        public virtual ExchangeOrderResult PlaceOrder(string symbol, decimal amount, decimal price, bool buy) { throw new NotImplementedException(); }
+        public virtual ExchangeOrderResult PlaceOrder(ExchangeOrderRequest order) { throw new NotImplementedException(); }
 
         /// <summary>
-        /// ASYNC - Place a limit order
+        /// ASYNC - Place an order
         /// </summary>
-        /// <param name="symbol">Symbol</param>
-        /// <param name="amount">Amount</param>
-        /// <param name="price">Price</param>
-        /// <param name="buy">True to buy, false to sell</param>
+        /// <param name="order">The order request</param>
         /// <returns>Result</returns>
-        public Task<ExchangeOrderResult> PlaceOrderAsync(string symbol, decimal amount, decimal price, bool buy) => Task.Factory.StartNew(() => PlaceOrder(symbol, amount, price, buy));
+        public Task<ExchangeOrderResult> PlaceOrderAsync(ExchangeOrderRequest order) => Task.Factory.StartNew(() => PlaceOrder(order));
 
         /// <summary>
         /// Get order details
@@ -319,6 +297,13 @@ namespace ExchangeSharp
         public virtual IEnumerable<ExchangeOrderResult> GetCompletedOrderDetails(string symbol = null, DateTime? afterDate = null) { throw new NotImplementedException(); }
 
         /// <summary>
+        /// Get the details of all completed orders via web socket
+        /// </summary>
+        /// <param name="callback">Callback</param>
+        /// <returns>Web socket, call Dispose to close</returns>
+        public virtual IDisposable GetCompletedOrderDetailsWebSocket(System.Action<ExchangeOrderResult> callback) { throw new NotImplementedException(); }
+
+        /// <summary>
         /// ASYNC - Get the details of all completed orders
         /// </summary>
         /// <param name="symbol">Symbol to get completed orders for or null for all</param>
@@ -336,6 +321,18 @@ namespace ExchangeSharp
         /// </summary>
         /// <param name="orderId">Order id of the order to cancel</param>
         public Task CancelOrderAsync(string orderId) => Task.Factory.StartNew(() => CancelOrder(orderId));
+
+        /// <summary>
+        /// A withdrawal request.
+        /// </summary>
+        /// <param name="withdrawalRequest">The withdrawal request.</param>
+        public virtual ExchangeWithdrawalResponse Withdraw(ExchangeWithdrawalRequest withdrawalRequest) => throw new NotImplementedException();
+
+        /// <summary>
+        /// Asynchronous withdraws.
+        /// </summary>
+        /// <param name="withdrawalRequest">The withdrawal request.</param>
+        public Task WithdrawAsync(ExchangeWithdrawalRequest withdrawalRequest) => Task.Factory.StartNew(() => Withdraw(withdrawalRequest));
     }
 
     /// <summary>
@@ -382,6 +379,11 @@ namespace ExchangeSharp
         /// Kraken
         /// </summary>
         public const string Kraken = "Kraken";
+
+        /// <summary>
+        /// Okex
+        /// </summary>
+        public const string Okex = "Okex";
 
         /// <summary>
         /// Poloniex

@@ -16,8 +16,10 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.WebSockets;
 using System.Security;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 using Newtonsoft.Json;
@@ -86,9 +88,19 @@ namespace ExchangeSharp
     public abstract class BaseAPI
     {
         /// <summary>
+        /// User agent for requests
+        /// </summary>
+        public const string RequestUserAgent = "ExchangeSharp (https://github.com/jjxtra/ExchangeSharp)";
+
+        /// <summary>
         /// Base URL for the API
         /// </summary>
         public abstract string BaseUrl { get; set; }
+
+        /// <summary>
+        /// Base URL for the API for web sockets
+        /// </summary>
+        public virtual string BaseUrlWebSocket { get; set; }
 
         /// <summary>
         /// Gets the name of the API
@@ -127,11 +139,6 @@ namespace ExchangeSharp
         public string RequestContentType { get; set; } = "text/plain";
 
         /// <summary>
-        /// User agent for requests
-        /// </summary>
-        public string RequestUserAgent { get; set; } = "ExchangeSharp (https://github.com/jjxtra/ExchangeSharp)";
-
-        /// <summary>
         /// Timeout for requests
         /// </summary>
         public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(30.0);
@@ -160,19 +167,18 @@ namespace ExchangeSharp
 
         private decimal lastNonce;
 
-        protected Dictionary<string, object> GetNoncePayload(string key = "nonce")
+        /// <summary>
+        /// Static constructor
+        /// </summary>
+        static BaseAPI()
         {
-            lock (this)
+            try
             {
-                Dictionary<string, object> noncePayload = new Dictionary<string, object>
-                {
-                    ["nonce"] = GenerateNonce()
-                };
-                if (RequestWindow.Ticks > 0)
-                {
-                    noncePayload["recvWindow"] = (long)RequestWindow.TotalMilliseconds;
-                }
-                return noncePayload;
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls | SecurityProtocolType.Ssl3;
+            }
+            catch
+            {
+
             }
         }
 
@@ -200,7 +206,7 @@ namespace ExchangeSharp
                             break;
 
                         case NonceStyle.TicksString:
-                            nonce = now.Ticks.ToString(CultureInfo.InvariantCulture.NumberFormat);
+                            nonce = now.Ticks.ToStringInvariant();
                             break;
 
                         case NonceStyle.UnixMilliseconds:
@@ -208,7 +214,7 @@ namespace ExchangeSharp
                             break;
 
                         case NonceStyle.UnixMillisecondsString:
-                            nonce = ((long)now.UnixTimestampFromDateTimeMilliseconds()).ToString(CultureInfo.InvariantCulture.NumberFormat);
+                            nonce = ((long)now.UnixTimestampFromDateTimeMilliseconds()).ToStringInvariant();
                             break;
 
                         case NonceStyle.UnixSeconds:
@@ -216,7 +222,7 @@ namespace ExchangeSharp
                             break;
 
                         case NonceStyle.UnixSecondsString:
-                            nonce = now.UnixTimestampFromDateTimeSeconds().ToString(CultureInfo.InvariantCulture.NumberFormat);
+                            nonce = now.UnixTimestampFromDateTimeSeconds().ToStringInvariant();
                             break;
 
                         default:
@@ -224,7 +230,7 @@ namespace ExchangeSharp
                     }
 
                     // check for duplicate nonce
-                    decimal convertedNonce = (decimal)Convert.ChangeType(nonce, typeof(decimal));
+                    decimal convertedNonce = nonce.ConvertInvariant<decimal>();
                     if (lastNonce != convertedNonce)
                     {
                         lastNonce = convertedNonce;
@@ -240,12 +246,12 @@ namespace ExchangeSharp
         /// Load API keys from an encrypted file - keys will stay encrypted in memory
         /// </summary>
         /// <param name="encryptedFile">Encrypted file to load keys from</param>
-        public virtual void LoadAPIKeys(string encryptedFile)
+        public void LoadAPIKeys(string encryptedFile)
         {
             SecureString[] strings = CryptoUtility.LoadProtectedStringsFromFile(encryptedFile);
             if (strings.Length < 2)
             {
-                throw new InvalidOperationException("Encrypted keys file should have a public and private key, and an optional pass phrase");
+                throw new InvalidOperationException("Encrypted keys file should have at least a public and private key, and an optional pass phrase");
             }
             PublicApiKey = strings[0];
             PrivateApiKey = strings[1];
@@ -253,6 +259,19 @@ namespace ExchangeSharp
             {
                 Passphrase = strings[3];
             }
+        }
+
+        /// <summary>
+        /// Load API keys from unsecure strings
+        /// </summary>
+        /// <param name="publicApiKey">Public Api Key</param>
+        /// <param name="privateApiKey">Private Api Key</param>
+        /// <param name="passPhrase">Pass phrase, null for none</param>
+        public void LoadAPIKeysUnsecure(string publicApiKey, string privateApiKey, string passPhrase = null)
+        {
+            PublicApiKey = publicApiKey.ToSecureString();
+            PrivateApiKey = privateApiKey.ToSecureString();
+            Passphrase = passPhrase?.ToSecureString();
         }
 
         /// <summary>
@@ -279,11 +298,12 @@ namespace ExchangeSharp
             string fullUrl = (baseUrl ?? BaseUrl) + url;
             Uri uri = ProcessRequestUrl(new UriBuilder(fullUrl), payload);
             HttpWebRequest request = HttpWebRequest.CreateHttp(uri);
+            request.Headers["Accept-Language"] = "en-us; q=1.0;";
             request.Method = method ?? RequestMethod;
             request.ContentType = RequestContentType;
             request.UserAgent = RequestUserAgent;
             request.CachePolicy = CachePolicy;
-            request.Timeout = (int)RequestTimeout.TotalMilliseconds;
+            request.Timeout = request.ReadWriteTimeout = request.ContinueTimeout = (int)RequestTimeout.TotalMilliseconds;
             request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
             ProcessRequest(request, payload);
             HttpWebResponse response;
@@ -355,6 +375,19 @@ namespace ExchangeSharp
         public Task<T> MakeJsonRequestAsync<T>(string url, string baseUrl = null, Dictionary<string, object> payload = null, string requestMethod = null) => Task.Factory.StartNew(() => MakeJsonRequest<T>(url, baseUrl, payload, requestMethod));
 
         /// <summary>
+        /// Connect a web socket to a path on the API and start listening, not all exchanges support this
+        /// </summary>
+        /// <param name="url">The sub url for the web socket, or null for none</param>
+        /// <param name="messageCallback">Callback for messages</param>
+        /// <param name="connectCallback">Connect callback</param>
+        /// <returns>Web socket - dispose of the wrapper to shutdown the socket</returns>
+        public WebSocketWrapper ConnectWebSocket(string url, System.Action<string, WebSocketWrapper> messageCallback, System.Action<WebSocketWrapper> connectCallback = null)
+        {
+            string fullUrl = BaseUrlWebSocket + (url ?? string.Empty);
+            return new WebSocketWrapper(fullUrl, messageCallback, TimeSpan.FromSeconds(30.0), connectCallback);
+        }
+
+        /// <summary>
         /// Whether the API can make authenticated (private) API requests
         /// </summary>
         /// <param name="payload">Payload to potentially send</param>
@@ -409,7 +442,7 @@ namespace ExchangeSharp
                 {
                     if (keyValue.Key != null && keyValue.Value != null && (includeNonce || keyValue.Key != "nonce"))
                     {
-                        form.AppendFormat("{0}={1}&", Uri.EscapeDataString(keyValue.Key), Uri.EscapeDataString(keyValue.Value.ToString()));
+                        form.AppendFormat("{0}={1}&", Uri.EscapeDataString(keyValue.Key), Uri.EscapeDataString(keyValue.Value.ToStringInvariant()));
                     }
                 }
                 if (form.Length != 0)
@@ -502,6 +535,27 @@ namespace ExchangeSharp
             lock (cache)
             {
                 cache[key] = new KeyValuePair<DateTime, object>(DateTime.UtcNow + expiration, value);
+            }
+        }
+
+        /// <summary>
+        /// Get a dictionary with a nonce key and value of the required nonce type
+        /// </summary>
+        /// <param name="key">Key</param>
+        /// <returns>Dictionary with nonce</returns>
+        protected Dictionary<string, object> GetNoncePayload()
+        {
+            lock (this)
+            {
+                Dictionary<string, object> noncePayload = new Dictionary<string, object>
+                {
+                    ["nonce"] = GenerateNonce()
+                };
+                if (RequestWindow.Ticks > 0)
+                {
+                    noncePayload["recvWindow"] = (long)RequestWindow.TotalMilliseconds;
+                }
+                return noncePayload;
             }
         }
     }

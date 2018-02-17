@@ -12,9 +12,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Security;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace ExchangeSharp
@@ -174,6 +172,13 @@ namespace ExchangeSharp
         Task<IEnumerable<KeyValuePair<string, ExchangeTicker>>> GetTickersAsync();
 
         /// <summary>
+        /// Get all tickers via web socket
+        /// </summary>
+        /// <param name="tickers">Callback</param>
+        /// <returns>Web socket, call Dispose to close</returns>
+        IDisposable GetTickersWebSocket(System.Action<IReadOnlyCollection<KeyValuePair<string, ExchangeTicker>>> tickers);
+
+        /// <summary>
         /// Get pending orders. Depending on the exchange, the number of bids and asks will have different counts, typically 50-100.
         /// </summary>
         /// <param name="symbol">Symbol</param>
@@ -237,21 +242,23 @@ namespace ExchangeSharp
         /// Get candles (open, high, low, close)
         /// </summary>
         /// <param name="symbol">Symbol to get candles for</param>
-        /// <param name="periodsSeconds">Period in seconds to get candles for. Use 60 for minute, 3600 for hour, 3600*24 for day, 3600*24*30 for month.</param>
+        /// <param name="periodSeconds">Period in seconds to get candles for. Use 60 for minute, 3600 for hour, 3600*24 for day, 3600*24*30 for month.</param>
         /// <param name="startDate">Optional start date to get candles for</param>
         /// <param name="endDate">Optional end date to get candles for</param>
+        /// <param name="limit">Max results, can be used instead of startDate and endDate if desired</param>
         /// <returns>Candles</returns>
-        IEnumerable<MarketCandle> GetCandles(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null);
+        IEnumerable<MarketCandle> GetCandles(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null, int? limit = null);
 
         /// <summary>
         /// ASYNC - Get candles (open, high, low, close)
         /// </summary>
         /// <param name="symbol">Symbol to get candles for</param>
-        /// <param name="periodsSeconds">Period in seconds to get candles for. Use 60 for minute, 3600 for hour, 3600*24 for day, 3600*24*30 for month.</param>
+        /// <param name="periodSeconds">Period in seconds to get candles for. Use 60 for minute, 3600 for hour, 3600*24 for day, 3600*24*30 for month.</param>
         /// <param name="startDate">Optional start date to get candles for</param>
         /// <param name="endDate">Optional end date to get candles for</param>
+        /// <param name="limit">Max results, can be used instead of startDate and endDate if desired</param>
         /// <returns>Candles</returns>
-        Task<IEnumerable<MarketCandle>> GetCandlesAsync(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null);
+        Task<IEnumerable<MarketCandle>> GetCandlesAsync(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null, int? limit = null);
 
         /// <summary>
         /// Get total amounts, symbol / amount dictionary
@@ -278,24 +285,18 @@ namespace ExchangeSharp
         Task<Dictionary<string, decimal>> GetAmountsAvailableToTradeAsync();
 
         /// <summary>
-        /// Place a limit order
+        /// Place an order
         /// </summary>
-        /// <param name="symbol">Symbol, i.e. btcusd</param>
-        /// <param name="amount">Amount to buy or sell</param>
-        /// <param name="price">Price to buy or sell at</param>
-        /// <param name="buy">True to buy, false to sell</param>
+        /// <param name="order">Order request</param>
         /// <returns>Order result and message string if any</returns>
-        ExchangeOrderResult PlaceOrder(string symbol, decimal amount, decimal price, bool buy);
+        ExchangeOrderResult PlaceOrder(ExchangeOrderRequest order);
 
         /// <summary>
-        /// ASYNC - Place a limit order
+        /// ASYNC - Place an order
         /// </summary>
-        /// <param name="symbol">Symbol, i.e. btcusd</param>
-        /// <param name="amount">Amount to buy or sell</param>
-        /// <param name="price">Price to buy or sell at</param>
-        /// <param name="buy">True to buy, false to sell</param>
+        /// <param name="order">Order request</param>
         /// <returns>Order result and message string if any</returns>
-        Task<ExchangeOrderResult> PlaceOrderAsync(string symbol, decimal amount, decimal price, bool buy);
+        Task<ExchangeOrderResult> PlaceOrderAsync(ExchangeOrderRequest order);
 
         /// <summary>
         /// Get details of an order
@@ -334,6 +335,13 @@ namespace ExchangeSharp
         IEnumerable<ExchangeOrderResult> GetCompletedOrderDetails(string symbol = null, DateTime? afterDate = null);
 
         /// <summary>
+        /// Get the details of all completed orders via web socket
+        /// </summary>
+        /// <param name="callback">Callback</param>
+        /// <returns>Web socket, call Dispose to close</returns>
+        IDisposable GetCompletedOrderDetailsWebSocket(System.Action<ExchangeOrderResult> callback);
+
+        /// <summary>
         /// ASYNC - Get the details of all completed orders
         /// </summary>
         /// <param name="symbol">Symbol to get completed orders for or null for all</param>
@@ -351,5 +359,22 @@ namespace ExchangeSharp
         /// </summary>
         /// <param name="orderId">Order id of the order to cancel</param>
         Task CancelOrderAsync(string orderId);
+    }
+
+    /// <summary>
+    /// The type of order - default is limit. Please use market orders with caution. Not all exchanges support market orders.
+    /// Types of orders
+    /// </summary>
+    public enum OrderType
+    {
+        /// <summary>
+        /// A limit order, the order will not buy or sell beyond the price you specify
+        /// </summary>
+        Limit,
+        
+        /// <summary>
+        /// A market order, you will buy or sell the full amount - use with caution as this will give you a terrible deal if the order book is thin
+        /// </summary>
+        Market
     }
 }

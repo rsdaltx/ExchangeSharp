@@ -12,7 +12,9 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+
 using ExchangeSharp;
 
 namespace ExchangeSharpConsoleApp
@@ -37,11 +39,45 @@ namespace ExchangeSharpConsoleApp
             {
                 return api.NormalizeSymbol("BTC-LTC");
             }
-            else if (api is ExchangeBinanceAPI)
+            else if (api is ExchangeBinanceAPI || api is ExchangeOkexAPI)
             {
                 return api.NormalizeSymbol("ETH-BTC");
             }
             return api.NormalizeSymbol("BTC-USD");
+        }
+
+        private static void TestRateGate()
+        {
+            int timesPerPeriod = 1;
+            int ms = 500;
+            int loops = 10;
+            double msMax = (double)ms * 1.1;
+            double msMin = (double)ms * 0.9;
+            RateGate gate = new RateGate(timesPerPeriod, TimeSpan.FromMilliseconds(ms));
+            if (!gate.WaitToProceed(0))
+            {
+                throw new APIException("Rate gate should have allowed immediate access to first attempt");
+            }
+            for (int i = 0; i < loops; i++)
+            {
+                Stopwatch timer = Stopwatch.StartNew();
+                gate.WaitToProceed();
+                timer.Stop();
+
+                if (i > 0)
+                {
+                    // check for too much elapsed time with a little fudge
+                    if (timer.Elapsed.TotalMilliseconds > msMax)
+                    {
+                        throw new APIException("Rate gate took too long to wait in between calls: " + timer.Elapsed.TotalMilliseconds + "ms");
+                    }
+                    // check for too little elapsed time with a little fudge
+                    else if (timer.Elapsed.TotalMilliseconds < msMin)
+                    {
+                        throw new APIException("Rate gate took too little to wait in between calls: " + timer.Elapsed.TotalMilliseconds + "ms");
+                    }
+                }
+            }
         }
 
         private static void TestEncryption()
@@ -65,9 +101,8 @@ namespace ExchangeSharpConsoleApp
             }
         }
 
-        public static void RunPerformTests(Dictionary<string, string> dict)
+        private static void TestExchanges()
         {
-            TestEncryption();
             IExchangeAPI[] apis = ExchangeAPI.GetExchangeAPIDictionary().Values.ToArray();
             foreach (IExchangeAPI api in apis)
             {
@@ -115,6 +150,13 @@ namespace ExchangeSharpConsoleApp
                     Console.WriteLine("Request failed, api: {0}, error: {1}", api, ex.Message);
                 }
             }
+        }
+
+        public static void RunPerformTests(Dictionary<string, string> dict)
+        {
+            TestExchanges();
+            TestRateGate();
+            TestEncryption();
         }
     }
 }

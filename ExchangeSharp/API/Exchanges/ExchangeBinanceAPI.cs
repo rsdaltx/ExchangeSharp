@@ -12,12 +12,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Net;
-using System.Security;
-using System.Text;
 using System.Threading.Tasks;
 using System.Web;
 
@@ -28,8 +24,10 @@ namespace ExchangeSharp
 {
     public class ExchangeBinanceAPI : ExchangeAPI
     {
-        public override string BaseUrl { get; set; } = "https://www.binance.com/api/v1";
-        public string BaseUrlPrivate { get; set; } = "https://www.binance.com/api/v3";
+        public override string BaseUrl { get; set; } = "https://api.binance.com/api/v1";
+        public override string BaseUrlWebSocket { get; set; } = "wss://stream.binance.com:9443";
+        public string BaseUrlPrivate { get; set; } = "https://api.binance.com/api/v3";
+        public string WithdrawalUrlPrivate { get; set; } = "https://api.binance.com/wapi/v3";
         public override string Name => ExchangeName.Binance;
 
         public override string NormalizeSymbol(string symbol)
@@ -46,7 +44,7 @@ namespace ExchangeSharp
             // give binance plenty of room to accept requests
             RequestWindow = TimeSpan.FromMinutes(15.0);
             NonceStyle = NonceStyle.UnixMilliseconds;
-            NonceOffset = TimeSpan.FromSeconds(1.0);
+            NonceOffset = TimeSpan.FromSeconds(10.0);
         }
 
         public override IEnumerable<string> GetSymbols()
@@ -62,7 +60,7 @@ namespace ExchangeSharp
             foreach (JToken token in obj)
             {
                 // bug I think in the API returns numbers as symbol names... WTF.
-                string symbol = (string)token["symbol"];
+                string symbol = token["symbol"].ToStringInvariant();
                 if (!long.TryParse(symbol, out long tmp))
                 {
                     symbols.Add(symbol);
@@ -87,9 +85,38 @@ namespace ExchangeSharp
             CheckError(obj);
             foreach (JToken child in obj)
             {
-                symbol = child["symbol"].ToString();
+                symbol = child["symbol"].ToStringInvariant();
                 yield return new KeyValuePair<string, ExchangeTicker>(symbol, ParseTicker(symbol, child));
             }
+        }
+
+        public override IDisposable GetTickersWebSocket(System.Action<IReadOnlyCollection<KeyValuePair<string, ExchangeTicker>>> callback)
+        {
+            if (callback == null)
+            {
+                return null;
+            }
+            return ConnectWebSocket("/stream?streams=!ticker@arr", (msg, _socket) =>
+            {
+                try
+                {
+                    JToken token = JToken.Parse(msg);
+                    List<KeyValuePair<string, ExchangeTicker>> tickerList = new List<KeyValuePair<string, ExchangeTicker>>();
+                    ExchangeTicker ticker;
+                    foreach (JToken childToken in token["data"])
+                    {
+                        ticker = ParseTickerWebSocket(childToken);
+                        tickerList.Add(new KeyValuePair<string, ExchangeTicker>(ticker.Volume.PriceSymbol, ticker));
+                    }
+                    if (tickerList.Count != 0)
+                    {
+                        callback(tickerList);
+                    }
+                }
+                catch
+                {
+                }
+            });
         }
 
         public override ExchangeOrderBook GetOrderBook(string symbol, int maxCount = 100)
@@ -117,16 +144,20 @@ namespace ExchangeSharp
             string baseUrl = "/aggTrades?symbol=" + symbol;
             string url;
             List<ExchangeTrade> trades = new List<ExchangeTrade>();
-            DateTime cutoff = DateTime.UtcNow;
+            DateTime cutoff;
+            if (sinceDateTime == null)
+            {
+                cutoff = DateTime.UtcNow;
+            }
+            else
+            {
+                cutoff = sinceDateTime.Value;
+                sinceDateTime = DateTime.UtcNow;
+            }
+            url = baseUrl;
 
             while (true)
             {
-                url = baseUrl;
-                if (sinceDateTime != null)
-                {
-                    url += "&startTime=" + CryptoUtility.UnixTimestampFromDateTimeMilliseconds(sinceDateTime.Value) +
-                        "&endTime=" + CryptoUtility.UnixTimestampFromDateTimeMilliseconds(sinceDateTime.Value + TimeSpan.FromDays(1.0));
-                }
                 JArray obj = MakeJsonRequest<Newtonsoft.Json.Linq.JArray>(url);
                 if (obj == null || obj.Count == 0)
                 {
@@ -134,22 +165,27 @@ namespace ExchangeSharp
                 }
                 if (sinceDateTime != null)
                 {
-                    sinceDateTime = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(obj.Last["T"].Value<long>());
-                    if (sinceDateTime.Value > cutoff)
+                    sinceDateTime = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(obj.First["T"].ConvertInvariant<long>());
+                    if (sinceDateTime.Value < cutoff)
                     {
                         sinceDateTime = null;
                     }
+                }
+                if (sinceDateTime != null)
+                {
+                    url = baseUrl + "&startTime=" + ((long)CryptoUtility.UnixTimestampFromDateTimeMilliseconds(sinceDateTime.Value - TimeSpan.FromHours(1.0))).ToStringInvariant() +
+                        "&endTime=" + ((long)CryptoUtility.UnixTimestampFromDateTimeMilliseconds(sinceDateTime.Value)).ToStringInvariant();
                 }
                 foreach (JToken token in obj)
                 {
                     // TODO: Binance doesn't provide a buy or sell type, I've put in a request for them to add this
                     trades.Add(new ExchangeTrade
                     {
-                        Amount = token["q"].Value<decimal>(),
-                        Price = token["p"].Value<decimal>(),
-                        Timestamp = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(token["T"].Value<long>()),
-                        Id = token["a"].Value<long>(),
-                        IsBuy = token["m"].Value<bool>()
+                        Amount = token["q"].ConvertInvariant<decimal>(),
+                        Price = token["p"].ConvertInvariant<decimal>(),
+                        Timestamp = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(token["T"].ConvertInvariant<long>()),
+                        Id = token["a"].ConvertInvariant<long>(),
+                        IsBuy = token["m"].ConvertInvariant<bool>()
                     });
                 }
                 trades.Sort((t1, t2) => t1.Timestamp.CompareTo(t2.Timestamp));
@@ -166,7 +202,7 @@ namespace ExchangeSharp
             }
         }
 
-        public override IEnumerable<MarketCandle> GetCandles(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null)
+        public override IEnumerable<MarketCandle> GetCandles(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null, int? limit = null)
         {
             /* [
             [
@@ -189,8 +225,12 @@ namespace ExchangeSharp
             if (startDate != null)
             {
                 url += "&startTime=" + (long)startDate.Value.UnixTimestampFromDateTimeMilliseconds();
+                url += "&endTime=" + ((endDate == null ? long.MaxValue : (long)endDate.Value.UnixTimestampFromDateTimeMilliseconds())).ToStringInvariant();
             }
-            url += "&endTime=" + (endDate == null ? long.MaxValue : (long)endDate.Value.UnixTimestampFromDateTimeMilliseconds());
+            if (limit != null)
+            {
+                url += "&limit=" + (limit.Value.ToStringInvariant());
+            }
             string periodString = CryptoUtility.SecondsToPeriodString(periodSeconds);
             url += "&interval=" + periodString;
             JToken obj = MakeJsonRequest<JToken>(url);
@@ -199,16 +239,16 @@ namespace ExchangeSharp
             {
                 yield return new MarketCandle
                 {
-                    ClosePrice = (decimal)array[4],
+                    ClosePrice = array[4].ConvertInvariant<decimal>(),
                     ExchangeName = Name,
-                    HighPrice = (decimal)array[2],
-                    LowPrice = (decimal)array[3],
+                    HighPrice = array[2].ConvertInvariant<decimal>(),
+                    LowPrice = array[3].ConvertInvariant<decimal>(),
                     Name = symbol,
-                    OpenPrice = (decimal)array[1],
+                    OpenPrice = array[1].ConvertInvariant<decimal>(),
                     PeriodSeconds = periodSeconds,
-                    Timestamp = CryptoUtility.UnixTimeStampToDateTimeMilliseconds((long)array[0]),
-                    VolumePrice = (double)array[5],
-                    VolumeQuantity = (double)array[7],
+                    Timestamp = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(array[0].ConvertInvariant<long>()),
+                    VolumePrice = array[5].ConvertInvariant<double>(),
+                    VolumeQuantity = array[7].ConvertInvariant<double>(),
                     WeightedAverage = 0m
                 };
             }
@@ -221,10 +261,10 @@ namespace ExchangeSharp
             Dictionary<string, decimal> balances = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
             foreach (JToken balance in token["balances"])
             {
-                decimal amount = (decimal)balance["free"] + (decimal)balance["locked"];
+                decimal amount = balance["free"].ConvertInvariant<decimal>() + balance["locked"].ConvertInvariant<decimal>();
                 if (amount > 0m)
                 {
-                    balances[(string)balance["asset"]] = amount;
+                    balances[balance["asset"].ToStringInvariant()] = amount;
                 }
             }
             return balances;
@@ -237,25 +277,29 @@ namespace ExchangeSharp
             Dictionary<string, decimal> balances = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
             foreach (JToken balance in token["balances"])
             {
-                decimal amount = (decimal)balance["free"];
+                decimal amount = balance["free"].ConvertInvariant<decimal>();
                 if (amount > 0m)
                 {
-                    balances[(string)balance["asset"]] = amount;
+                    balances[balance["asset"].ToStringInvariant()] = amount;
                 }
             }
             return balances;
         }
 
-        public override ExchangeOrderResult PlaceOrder(string symbol, decimal amount, decimal price, bool buy)
+        public override ExchangeOrderResult PlaceOrder(ExchangeOrderRequest order)
         {
-            symbol = NormalizeSymbol(symbol);
+            string symbol = NormalizeSymbol(order.Symbol);
             Dictionary<string, object> payload = GetNoncePayload();
             payload["symbol"] = symbol;
-            payload["side"] = (buy ? "BUY" : "SELL");
-            payload["type"] = "LIMIT";
-            payload["quantity"] = RoundAmount(amount);
-            payload["price"] = price;
-            payload["timeInForce"] = "GTC";
+            payload["side"] = (order.IsBuy ? "BUY" : "SELL");
+            payload["type"] = order.OrderType.ToString().ToUpperInvariant();
+            payload["quantity"] = order.RoundAmount();
+            if (order.OrderType != OrderType.Market)
+            {
+                payload["timeInForce"] = "GTC";
+                payload["price"] = order.Price;
+            }
+
             JToken token = MakeJsonRequest<JToken>("/order", BaseUrlPrivate, payload, "POST");
             CheckError(token);
             return ParseOrder(token);
@@ -276,66 +320,18 @@ namespace ExchangeSharp
             return ParseOrder(token);
         }
 
-        private IEnumerable<ExchangeOrderResult> GetOpenOrderDetailsForAllSymbols()
-        {
-            // TODO: This is a HACK, Binance API needs to add a single API call to get all orders for all symbols, terrible...
-            List<ExchangeOrderResult> orders = new List<ExchangeOrderResult>();
-            Exception ex = null;
-            string failedSymbol = null;
-            Parallel.ForEach(GetSymbols().Where(s => s.IndexOf("BTC", StringComparison.OrdinalIgnoreCase) >= 0), (s) =>
-            {
-                try
-                {
-                    foreach (ExchangeOrderResult order in GetOpenOrderDetails(s))
-                    {
-                        lock (orders)
-                        {
-                            orders.Add(order);
-                        }
-                    }
-                }
-                catch (Exception _ex)
-                {
-                    failedSymbol = s;
-                    ex = _ex;
-                }
-            });
-
-            if (ex != null)
-            {
-                throw new APIException("Failed to get open orders for symbol " + failedSymbol, ex);
-            }
-
-            // sort timestamp desc
-            orders.Sort((o1, o2) =>
-            {
-                return o2.OrderDate.CompareTo(o1.OrderDate);
-            });
-            foreach (ExchangeOrderResult order in orders)
-            {
-                yield return order;
-            }
-        }
-
         public override IEnumerable<ExchangeOrderResult> GetOpenOrderDetails(string symbol = null)
         {
-            if (string.IsNullOrWhiteSpace(symbol))
-            {
-                foreach (ExchangeOrderResult order in GetOpenOrderDetailsForAllSymbols())
-                {
-                    yield return order;
-                }
-            }
-            else
-            {
-                Dictionary<string, object> payload = GetNoncePayload();
+            Dictionary<string, object> payload = GetNoncePayload();
+            if (!string.IsNullOrWhiteSpace(symbol))
+	        {
                 payload["symbol"] = NormalizeSymbol(symbol);
-                JToken token = MakeJsonRequest<JToken>("/openOrders", BaseUrlPrivate, payload);
-                CheckError(token);
-                foreach (JToken order in token)
-                {
-                    yield return ParseOrder(order);
-                }
+	        }
+            JToken token = MakeJsonRequest<JToken>("/openOrders", BaseUrlPrivate, payload);
+            CheckError(token);
+            foreach (JToken order in token)
+            {
+                yield return ParseOrder(order);
             }
         }
 
@@ -421,11 +417,47 @@ namespace ExchangeSharp
             CheckError(token);
         }
 
+
+        public override ExchangeWithdrawalResponse Withdraw(ExchangeWithdrawalRequest withdrawalRequest)
+        {
+            Dictionary<string, object> payload = GetNoncePayload();
+            payload["asset"] = withdrawalRequest.Asset;
+            payload["address"] = withdrawalRequest.ToAddress;
+            payload["amount"] = withdrawalRequest.Amount;
+
+            if (!string.IsNullOrWhiteSpace(withdrawalRequest.Name))
+            {
+                payload["name"] = withdrawalRequest.Name;
+            }
+
+            if (!string.IsNullOrWhiteSpace(withdrawalRequest.AddressTag))
+            {
+                payload["addressTag"] = withdrawalRequest.AddressTag;
+            }
+
+            // yes, .html ...
+            JToken response = MakeJsonRequest<JToken>("/withdraw.html", WithdrawalUrlPrivate, payload, "POST");
+
+            CheckError(response);
+            ExchangeWithdrawalResponse withdrawalResponse = new ExchangeWithdrawalResponse
+            {
+                Id = response["id"].ToStringInvariant(),
+                Message = response["msg"].ToStringInvariant(),
+            };
+
+            if (response["success"] == null || !response["success"].ConvertInvariant<bool>())
+            {
+                throw new APIException(response["msg"].ToStringInvariant());
+            }
+
+            return withdrawalResponse;
+        }
+
         private void CheckError(JToken result)
         {
             if (result != null && !(result is JArray) && result["status"] != null && result["code"] != null)
             {
-                throw new APIException(result["code"].Value<string>() + ": " + (result["msg"] != null ? result["msg"].Value<string>() : "Unknown Error"));
+                throw new APIException(result["code"].ToStringInvariant() + ": " + (result["msg"] != null ? result["msg"].ToStringInvariant() : "Unknown Error"));
             }
         }
 
@@ -434,16 +466,34 @@ namespace ExchangeSharp
             // {"priceChange":"-0.00192300","priceChangePercent":"-4.735","weightedAvgPrice":"0.03980955","prevClosePrice":"0.04056700","lastPrice":"0.03869000","lastQty":"0.69300000","bidPrice":"0.03858500","bidQty":"38.35000000","askPrice":"0.03869000","askQty":"31.90700000","openPrice":"0.04061300","highPrice":"0.04081900","lowPrice":"0.03842000","volume":"128015.84300000","quoteVolume":"5096.25362239","openTime":1512403353766,"closeTime":1512489753766,"firstId":4793094,"lastId":4921546,"count":128453}
             return new ExchangeTicker
             {
-                Ask = (decimal)token["askPrice"],
-                Bid = (decimal)token["bidPrice"],
-                Last = (decimal)token["lastPrice"],
+                Ask = token["askPrice"].ConvertInvariant<decimal>(),
+                Bid = token["bidPrice"].ConvertInvariant<decimal>(),
+                Last = token["lastPrice"].ConvertInvariant<decimal>(),
                 Volume = new ExchangeVolume
                 {
-                    PriceAmount = (decimal)token["volume"],
+                    PriceAmount = token["volume"].ConvertInvariant<decimal>(),
                     PriceSymbol = symbol,
-                    QuantityAmount = (decimal)token["quoteVolume"],
+                    QuantityAmount = token["quoteVolume"].ConvertInvariant<decimal>(),
                     QuantitySymbol = symbol,
-                    Timestamp = CryptoUtility.UnixTimeStampToDateTimeMilliseconds((long)token["closeTime"])
+                    Timestamp = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(token["closeTime"].ConvertInvariant<long>())
+                }
+            };
+        }
+
+        private ExchangeTicker ParseTickerWebSocket(JToken token)
+        {
+            return new ExchangeTicker
+            {
+                Ask = token["a"].ConvertInvariant<decimal>(),
+                Bid = token["b"].ConvertInvariant<decimal>(),
+                Last = token["c"].ConvertInvariant<decimal>(),
+                Volume = new ExchangeVolume
+                {
+                    PriceAmount = token["v"].ConvertInvariant<decimal>(),
+                    PriceSymbol = token["s"].ToStringInvariant(),
+                    QuantityAmount = token["q"].ConvertInvariant<decimal>(),
+                    QuantitySymbol = token["s"].ToStringInvariant(),
+                    Timestamp = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(token["E"].ConvertInvariant<long>())
                 }
             };
         }
@@ -453,11 +503,11 @@ namespace ExchangeSharp
             ExchangeOrderBook book = new ExchangeOrderBook();
             foreach (JArray array in token["bids"])
             {
-                book.Bids.Add(new ExchangeOrderPrice { Price = (decimal)array[0], Amount = (decimal)array[1] });
+                book.Bids.Add(new ExchangeOrderPrice { Price = array[0].ConvertInvariant<decimal>(), Amount = array[1].ConvertInvariant<decimal>() });
             }
             foreach (JArray array in token["asks"])
             {
-                book.Asks.Add(new ExchangeOrderPrice { Price = (decimal)array[0], Amount = (decimal)array[1] });
+                book.Asks.Add(new ExchangeOrderPrice { Price = array[0].ConvertInvariant<decimal>(), Amount = array[1].ConvertInvariant<decimal>() });
             }
             return book;
         }
@@ -479,15 +529,16 @@ namespace ExchangeSharp
             */
             ExchangeOrderResult result = new ExchangeOrderResult
             {
-                Amount = (decimal)token["origQty"],
-                AmountFilled = (decimal)token["executedQty"],
-                AveragePrice = (decimal)token["price"],
-                IsBuy = (string)token["side"] == "BUY",
-                OrderDate = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(token["time"] == null ? (long)token["transactTime"] : (long)token["time"]),
-                OrderId = (string)token["orderId"],
-                Symbol = (string)token["symbol"]
+                Amount = token["origQty"].ConvertInvariant<decimal>(),
+                AmountFilled = token["executedQty"].ConvertInvariant<decimal>(),
+                Price = token["price"].ConvertInvariant<decimal>(),
+                IsBuy = token["side"].ToStringInvariant() == "BUY",
+                OrderDate = CryptoUtility.UnixTimeStampToDateTimeMilliseconds(token["time"].ConvertInvariant<long>(token["transactTime"].ConvertInvariant<long>())),
+                OrderId = token["orderId"].ToStringInvariant(),
+                Symbol = token["symbol"].ToStringInvariant()
             };
-            switch ((string)token["status"])
+            result.AveragePrice = (result.AmountFilled <= 0m ? 0m : result.Price / result.AmountFilled);
+            switch (token["status"].ToStringInvariant())
             {
                 case "NEW":
                     result.Result = ExchangeAPIOrderResult.Pending;
@@ -529,7 +580,7 @@ namespace ExchangeSharp
             {
                 // payload is ignored, except for the nonce which is added to the url query - bittrex puts all the "post" parameters in the url query instead of the request body
                 var query = HttpUtility.ParseQueryString(url.Query);
-                string newQuery = "timestamp=" + payload["nonce"].ToString() + (query.Count == 0 ? string.Empty : "&" + query.ToString()) +
+                string newQuery = "timestamp=" + payload["nonce"].ToStringInvariant() + (query.Count == 0 ? string.Empty : "&" + query.ToString()) +
                     (payload.Count > 1 ? "&" + GetFormForPayload(payload, false) : string.Empty);
                 string signature = CryptoUtility.SHA256Sign(newQuery, CryptoUtility.SecureStringToBytes(PrivateApiKey));
                 newQuery += "&signature=" + signature;

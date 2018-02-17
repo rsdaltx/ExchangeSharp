@@ -10,13 +10,28 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
-namespace ExchangeSharpConsoleApp
+namespace ExchangeSharp
 {
-    public static class ExchangeSharpConsoleMain
+    public class ExchangeWithdrawalRequest
     {
-        public static int Main(string[] args)
-        {
-            return ExchangeSharpConsole.ConsoleMain(args);
-        }
+        /// <summary>Gets or sets the asset.</summary>
+        /// <value>The asset.</value>
+        public string Asset { get; set; }
+
+        /// <summary>Gets or sets to address.</summary>
+        /// <value>To address.</value>
+        public string ToAddress { get; set; }
+
+        /// <summary>Gets or sets the address tag.</summary>
+        /// <value>The address tag.</value>
+        public string AddressTag { get; set; }
+
+        /// <summary>Gets or sets the Amount. Secondary address identifier for coins like XRP,XMR etc</summary>
+        /// <value>The Amount.</value>
+        public decimal Amount { get; set; }
+
+        /// <summary>Description of the address</summary>
+        /// <value>The name.</value>
+        public string Name { get; set; }
     }
 }

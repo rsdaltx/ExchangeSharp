@@ -86,6 +86,14 @@ namespace ExchangeSharpConsoleApp
                 {
                     RunProcessEncryptedAPIKeys(dict);
                 }
+                else if (dict.ContainsKey("poloniex-websocket"))
+                {
+                    RunPoloniexWebSocket();
+                }
+                else if (dict.ContainsKey("bittrex-websocket"))
+                {
+                    RunBittrexWebSocket();
+                }
                 else
                 {
                     Console.WriteLine("Unrecognized command line arguments.");

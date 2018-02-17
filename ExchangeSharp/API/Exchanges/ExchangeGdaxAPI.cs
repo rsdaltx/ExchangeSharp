@@ -12,15 +12,9 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
-using System.Linq;
 using System.Net;
-using System.Security;
-using System.Text;
 using System.Threading.Tasks;
 
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace ExchangeSharp
@@ -42,21 +36,23 @@ namespace ExchangeSharp
 
         private ExchangeOrderResult ParseOrder(JToken result)
         {
-            decimal executedValue = (decimal)result["executed_value"];
-            decimal amountFilled = (decimal)result["filled_size"];
-            decimal amount = result["size"] == null ? amountFilled : (decimal)result["size"];
-            decimal averagePrice = (executedValue <= 0m ? 0m : executedValue / amountFilled);
+            decimal executedValue = result["executed_value"].ConvertInvariant<decimal>();
+            decimal amountFilled = result["filled_size"].ConvertInvariant<decimal>();
+            decimal amount = result["size"].ConvertInvariant<decimal>(amountFilled);
+            decimal price = result["price"].ConvertInvariant<decimal>();
+            decimal averagePrice = (amountFilled <= 0m ? 0m : executedValue / amountFilled);
             ExchangeOrderResult order = new ExchangeOrderResult
             {
                 Amount = amount,
                 AmountFilled = amountFilled,
+                Price = price,
                 AveragePrice = averagePrice,
-                IsBuy = ((string)result["side"]) == "buy",
-                OrderDate = (DateTime)result["created_at"],
-                Symbol = (string)result["product_id"],
-                OrderId = (string)result["id"]
+                IsBuy = (result["side"].ToStringInvariant() == "buy"),
+                OrderDate = result["created_at"].ConvertInvariant<DateTime>(),
+                Symbol = result["product_id"].ToStringInvariant(),
+                OrderId = result["id"].ToStringInvariant()
             };
-            switch ((string)result["status"])
+            switch (result["status"].ToStringInvariant())
             {
                 case "pending":
                     order.Result = ExchangeAPIOrderResult.Pending;
@@ -104,7 +100,7 @@ namespace ExchangeSharp
             }
 
             // gdax is funny and wants a seconds double for the nonce, weird... we convert it to double and back to string invariantly to ensure decimal dot is used and not comma
-            string timestamp = double.Parse(payload["nonce"].ToString()).ToString(CultureInfo.InvariantCulture);
+            string timestamp = payload["nonce"].ToStringInvariant();
             payload.Remove("nonce");
             string form = GetJsonForPayload(payload);
             byte[] secret = CryptoUtility.SecureStringToBytesBase64Decode(PrivateApiKey);
@@ -137,18 +133,6 @@ namespace ExchangeSharp
             return symbol?.Replace('_', '-').ToUpperInvariant();
         }
 
-        public override void LoadAPIKeys(string encryptedFile)
-        {
-            SecureString[] strings = CryptoUtility.LoadProtectedStringsFromFile(encryptedFile);
-            if (strings.Length != 3)
-            {
-                throw new InvalidOperationException("Encrypted keys file should have a public and private key and pass phrase");
-            }
-            PublicApiKey = strings[0];
-            PrivateApiKey = strings[1];
-            Passphrase = strings[2];
-        }
-
         public override IEnumerable<string> GetSymbols()
         {
             Dictionary<string, string>[] symbols = MakeJsonRequest<Dictionary<string, string>[]>("/products");
@@ -163,13 +147,13 @@ namespace ExchangeSharp
         public override ExchangeTicker GetTicker(string symbol)
         {
             Dictionary<string, string> ticker = MakeJsonRequest<Dictionary<string, string>>("/products/" + symbol + "/ticker");
-            decimal volume = decimal.Parse(ticker["volume"]);
+            decimal volume = Convert.ToDecimal(ticker["volume"], System.Globalization.CultureInfo.InvariantCulture);
             DateTime timestamp = DateTime.Parse(ticker["time"]);
-            decimal price = decimal.Parse(ticker["price"]);
+            decimal price = Convert.ToDecimal(ticker["price"], System.Globalization.CultureInfo.InvariantCulture);
             return new ExchangeTicker
             {
-                Ask = decimal.Parse(ticker["ask"]),
-                Bid = decimal.Parse(ticker["bid"]),
+                Ask = Convert.ToDecimal(ticker["ask"], System.Globalization.CultureInfo.InvariantCulture),
+                Bid = Convert.ToDecimal(ticker["bid"], System.Globalization.CultureInfo.InvariantCulture),
                 Last = price,
                 Volume = new ExchangeVolume { PriceAmount = volume, PriceSymbol = symbol, QuantityAmount = volume * price, QuantitySymbol = symbol, Timestamp = timestamp }
             };
@@ -225,11 +209,11 @@ namespace ExchangeSharp
             {
                 tradeList.Add(new ExchangeTrade
                 {
-                    Amount = decimal.Parse(trade["size"] as string),
-                    IsBuy = trade["side"] as string == "buy",
-                    Price = decimal.Parse(trade["price"] as string),
+                    Amount = trade["size"].ConvertInvariant<decimal>(),
+                    IsBuy = trade["side"].ToStringInvariant() == "buy",
+                    Price = trade["price"].ConvertInvariant<decimal>(),
                     Timestamp = (DateTime)trade["time"],
-                    Id = (long)trade["trade_id"]
+                    Id = trade["trade_id"].ConvertInvariant<long>()
                 });
             }
             foreach (ExchangeTrade trade in tradeList)
@@ -247,17 +231,22 @@ namespace ExchangeSharp
             JArray bids = books["bids"] as JArray;
             foreach (JArray ask in asks)
             {
-                orders.Asks.Add(new ExchangeOrderPrice { Amount = (decimal)ask[1], Price = (decimal)ask[0] });
+                orders.Asks.Add(new ExchangeOrderPrice { Amount = ask[1].ConvertInvariant<decimal>(), Price = ask[0].ConvertInvariant<decimal>() });
             }
             foreach (JArray bid in bids)
             {
-                orders.Bids.Add(new ExchangeOrderPrice { Amount = (decimal)bid[1], Price = (decimal)bid[0] });
+                orders.Bids.Add(new ExchangeOrderPrice { Amount = bid[1].ConvertInvariant<decimal>(), Price = bid[0].ConvertInvariant<decimal>() });
             }
             return orders;
         }
 
-        public override IEnumerable<MarketCandle> GetCandles(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null)
+        public override IEnumerable<MarketCandle> GetCandles(string symbol, int periodSeconds, DateTime? startDate = null, DateTime? endDate = null, int? limit = null)
         {
+            if (limit != null)
+            {
+                throw new APIException("Limit parameter not supported");
+            }
+
             // /products/<product-id>/candles
             // https://api.gdax.com/products/LTC-BTC/candles?granularity=86400&start=2017-12-04T18:15:33&end=2017-12-11T18:15:33
             List<MarketCandle> candles = new List<MarketCandle>();
@@ -280,16 +269,16 @@ namespace ExchangeSharp
             {
                 candles.Add(new MarketCandle
                 {
-                    ClosePrice = (decimal)candle[4],
+                    ClosePrice = candle[4].ConvertInvariant<decimal>(),
                     ExchangeName = Name,
-                    HighPrice = (decimal)candle[2],
-                    LowPrice = (decimal)candle[1],
+                    HighPrice = candle[2].ConvertInvariant<decimal>(),
+                    LowPrice = candle[1].ConvertInvariant<decimal>(),
                     Name = symbol,
-                    OpenPrice = (decimal)candle[3],
+                    OpenPrice = candle[3].ConvertInvariant<decimal>(),
                     PeriodSeconds = periodSeconds,
-                    Timestamp = CryptoUtility.UnixTimeStampToDateTimeSeconds((long)candle[0]),
-                    VolumePrice = (double)candle[5],
-                    VolumeQuantity = (double)candle[5] * (double)candle[4]
+                    Timestamp = CryptoUtility.UnixTimeStampToDateTimeSeconds(candle[0].ConvertInvariant<long>()),
+                    VolumePrice = candle[5].ConvertInvariant<double>(),
+                    VolumeQuantity = candle[5].ConvertInvariant<double>() * candle[4].ConvertInvariant<double>()
                 });
             }
             // re-sort in ascending order
@@ -303,10 +292,10 @@ namespace ExchangeSharp
             JArray array = MakeJsonRequest<JArray>("/accounts", null, GetNoncePayload());
             foreach (JToken token in array)
             {
-                decimal amount = (decimal)token["balance"];
+                decimal amount = token["balance"].ConvertInvariant<decimal>();
                 if (amount > 0m)
                 {
-                    amounts[(string)token["currency"]] = amount;
+                    amounts[token["currency"].ToStringInvariant()] = amount;
                 }
             }
             return amounts;
@@ -318,28 +307,33 @@ namespace ExchangeSharp
             JArray array = MakeJsonRequest<JArray>("/accounts", null, GetNoncePayload());
             foreach (JToken token in array)
             {
-                decimal amount = (decimal)token["available"];
+                decimal amount = token["available"].ConvertInvariant<decimal>();
                 if (amount > 0m)
                 {
-                    amounts[(string)token["currency"]] = amount;
+                    amounts[token["currency"].ToStringInvariant()] = amount;
                 }
             }
             return amounts;
         }
 
-        public override ExchangeOrderResult PlaceOrder(string symbol, decimal amount, decimal price, bool buy)
+        public override ExchangeOrderResult PlaceOrder(ExchangeOrderRequest order)
         {
-            symbol = NormalizeSymbol(symbol);
+            string symbol = NormalizeSymbol(order.Symbol);
             Dictionary<string, object> payload = new Dictionary<string, object>
             {
                 { "nonce",GenerateNonce() },
-                { "type", "limit" },
-                { "side", (buy ? "buy" : "sell") },
+                { "type", order.OrderType.ToString().ToLowerInvariant() },
+                { "side", (order.IsBuy ? "buy" : "sell") },
                 { "product_id", symbol },
-                { "price", price.ToString(CultureInfo.InvariantCulture.NumberFormat) },
-                { "size", RoundAmount(amount).ToString(CultureInfo.InvariantCulture.NumberFormat) },
-                { "time_in_force", "GTC" } // good til cancel
+                { "size", order.RoundAmount().ToStringInvariant() }
             };
+
+            if (order.OrderType != OrderType.Market)
+            {
+                payload["time_in_force"] = "GTC"; // good til cancel
+                payload["price"] = order.Price.ToStringInvariant();
+            }
+
             JObject result = MakeJsonRequest<JObject>("/orders", null, payload, "POST");
             return ParseOrder(result);
         }

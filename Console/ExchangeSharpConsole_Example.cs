@@ -12,6 +12,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
+
 using ExchangeSharp;
 
 namespace ExchangeSharpConsoleApp
@@ -28,7 +30,13 @@ namespace ExchangeSharpConsoleApp
             api.LoadAPIKeys("keys.bin");
 
             /// place limit order for 0.01 bitcoin at ticker.Ask USD
-            ExchangeOrderResult result = api.PlaceOrder("XXBTZUSD", 0.01m, ticker.Ask, true);
+            ExchangeOrderResult result = api.PlaceOrder(new ExchangeOrderRequest
+            {
+                Amount = 0.01m,
+                IsBuy = true,
+                Price = ticker.Ask,
+                Symbol = "XXBTZUSD"
+            });
 
             // Kraken is a bit funny in that they don't return the order details in the initial request, so you have to follow up with an order details request
             //  if you want to know more info about the order - most other exchanges don't return until they have the order details for you.
@@ -38,6 +46,38 @@ namespace ExchangeSharpConsoleApp
             result = api.GetOrderDetails(result.OrderId);
 
             Console.WriteLine("Placed an order on Kraken for 0.01 bitcoin at {0} USD. Status is {1}. Order id is {2}.", ticker.Ask, result.Result, result.OrderId);
+        }
+
+        public static void RunPoloniexWebSocket()
+        {
+            var api = new ExchangePoloniexAPI();
+            var wss = api.GetTickersWebSocket((t) =>
+            {
+                // depending on the exchange, the (t) parameter (a collection of tickers) may have one ticker or all of them
+                foreach (var ticker in t)
+                {
+                    Console.WriteLine(ticker);
+                }
+            });
+            Console.WriteLine("Press any key to quit.");
+            Console.ReadKey();
+            wss.Dispose();
+        }
+
+        private static void RunBittrexWebSocket()
+        {
+            var bittrex = new ExchangeBittrexAPI();
+            IDisposable bitSocket = bittrex.GetTickersWebSocket(freshTickers =>
+            {
+                foreach (KeyValuePair<string, ExchangeTicker> kvp in freshTickers)
+                {
+                    Console.WriteLine($"market {kvp.Key}, ticker {kvp.Value}");
+                }
+            });
+
+            Console.WriteLine("Press any key to quit.");
+            Console.ReadKey();
+            bitSocket.Dispose();
         }
 
         public static void RunProcessEncryptedAPIKeys(Dictionary<string, string> dict)

@@ -13,7 +13,9 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -28,14 +30,28 @@ namespace ExchangeSharp
         // Semaphore used to count and limit the number of occurrences per unit time.
         private readonly SemaphoreSlim semaphore;
 
-        // Times (in millisecond ticks) at which the semaphore should be exited.
-        private readonly ConcurrentQueue<DateTime> exitTimes = new ConcurrentQueue<DateTime>();
+        // Times (in ticks, where 1 tick = 10000 milliseconds) at which the semaphore should be exited.
+        private readonly ConcurrentQueue<TimeSpan> exitTimes = new ConcurrentQueue<TimeSpan>();
 
         // Timer used to trigger exiting the semaphore.
-        private readonly Timer exitTimer;
+        private readonly Timer timer;
+
+        // Track exit time
+        private readonly Stopwatch exitTimer = Stopwatch.StartNew();
+
+        // No period for timer
+        private readonly TimeSpan negativeOne = TimeSpan.FromMilliseconds(-1.0);
 
         // Whether this instance is disposed.
         private bool isDisposed;
+
+        private TimeSpan CurrentExitTimer()
+        {
+            lock (exitTimer)
+            {
+                return exitTimer.Elapsed;
+            }
+        }
 
         /// <summary>
         /// Callback for the exit timer that exits the semaphore based on exit times in the queue and then sets the timer for the nextexit time.
@@ -44,8 +60,8 @@ namespace ExchangeSharp
         private void ExitTimerCallback(object state)
         {
             // While there are exit times that are passed due still in the queue, exit the semaphore and dequeue the exit time.
-            DateTime exitTime;
-            while (exitTimes.TryPeek(out exitTime) && (exitTime - DateTime.UtcNow).Ticks <= 0)
+            TimeSpan exitTime;
+            while (exitTimes.TryPeek(out exitTime) && (exitTime - CurrentExitTimer()).Ticks <= 0)
             {
                 semaphore.Release();
                 exitTimes.TryDequeue(out exitTime);
@@ -56,15 +72,25 @@ namespace ExchangeSharp
             TimeSpan timeUntilNextCheck;
             if (exitTimes.TryPeek(out exitTime))
             {
-                timeUntilNextCheck = (exitTime - DateTime.UtcNow);
+                timeUntilNextCheck = (exitTime - CurrentExitTimer());
+
+                // ensure the next time check is within the time unit
+                if (timeUntilNextCheck.Ticks < 1)
+                {
+                    timeUntilNextCheck = TimeSpan.FromTicks(1);
+                }
+                else if (timeUntilNextCheck > TimeUnit)
+                {
+                    timeUntilNextCheck = TimeUnit;
+                }
             }
             else
             {
                 timeUntilNextCheck = TimeUnit;
             }
 
-            // Set the timer.
-            exitTimer.Change((long)timeUntilNextCheck.TotalMilliseconds, -1);
+            // Set the timer in milliseconds
+            timer.Change(timeUntilNextCheck, negativeOne);
         }
 
         private void CheckDisposed()
@@ -85,7 +111,7 @@ namespace ExchangeSharp
             {
                 // The semaphore and timer both implement IDisposable and therefore must be disposed.
                 semaphore.Dispose();
-                exitTimer.Dispose();
+                timer.Dispose();
                 isDisposed = true;
             }
         }
@@ -123,7 +149,7 @@ namespace ExchangeSharp
 
             // Create a timer to exit the semaphore. Use the time unit as the original
             // interval length because that's the earliest we will need to exit the semaphore.
-            exitTimer = new Timer(ExitTimerCallback, null, (long)TimeUnit.TotalMilliseconds, -1);
+            timer = new System.Threading.Timer(ExitTimerCallback, null, TimeUnit, negativeOne);
         }
 
         /// <summary>
@@ -149,8 +175,7 @@ namespace ExchangeSharp
             // and add it to the queue.
             if (entered)
             {
-                var timeToExit = DateTime.UtcNow + TimeUnit;
-                exitTimes.Enqueue(timeToExit);
+                exitTimes.Enqueue(CurrentExitTimer() + TimeUnit);
             }
 
             return entered;
@@ -183,7 +208,6 @@ namespace ExchangeSharp
             Dispose(true);
             GC.SuppressFinalize(this);
         }
-
 
         /// <summary>
         /// Number of occurrences allowed per unit of time.

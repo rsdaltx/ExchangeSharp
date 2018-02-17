@@ -1,18 +1,35 @@
+<img src='logo.png' width='600' />
+
+[![GitHub issues](https://img.shields.io/github/issues/jjxtra/ExchangeSharp.svg)](https://github.com/jjxtra/ExchangeSharp/issues)
+[![GitHub forks](https://img.shields.io/github/forks/jjxtra/ExchangeSharp.svg)](https://github.com/jjxtra/ExchangeSharp/network)
+[![GitHub stars](https://img.shields.io/github/stars/jjxtra/ExchangeSharp.svg)](https://github.com/jjxtra/ExchangeSharp/stargazers)
+[![GitHub license](https://img.shields.io/github/license/jjxtra/ExchangeSharp.svg)](https://github.com/jjxtra/ExchangeSharp/blob/master/LICENSE.txt)
+[![Twitter](https://img.shields.io/twitter/url/https/github.com/jjxtra/ExchangeSharp.svg?style=social)](https://twitter.com/intent/tweet?text=Wow:&url=https%3A%2F%2Fgithub.com%2Fjjxtra%2FExchangeSharp)
+
+[![Donate with Bitcoin](https://en.cryptobadges.io/badge/small/1GBz8ithHvTqeRZxkmpHx5kQ9wBXuSH8AG)](https://en.cryptobadges.io/donate/1GBz8ithHvTqeRZxkmpHx5kQ9wBXuSH8AG)
+
+[![Donate with Litecoin](https://en.cryptobadges.io/badge/small/LWxRMaVFeXLmaq5munDJxADYYLv2szYi9i)](https://en.cryptobadges.io/donate/LWxRMaVFeXLmaq5munDJxADYYLv2szYi9i)
+
+[![Donate with Ethereum](https://en.cryptobadges.io/badge/small/0x77d3D990859a8c3e3486b5Ad63Da223f7F3778dc)](https://en.cryptobadges.io/donate/0x77d3D990859a8c3e3486b5Ad63Da223f7F3778dc)
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=L67Q4KQN5DHLY)
+
 ExchangeSharp is a C# console app and framework for trading and communicating with various exchange API end points for stocks or cryptocurrency assets.
 
 Visual Studio 2017 is required, along with either .NET 4.7 or .NET standard 2.0.
 
 The following cryptocurrency exchanges are supported:
 
-- Binance (public, basic private)
-- Bitfinex (public, basic private)
-- Bithumb (public)
-- Bitstamp (public)
-- Bittrex (public, basic private)
-- Gemini (public, basic private)
-- GDAX (public, basic private)
-- Kraken (public, basic private)
-- Poloniex (public, basic private)
+- Binance (public REST, basic private REST, public web socket (tickers))
+- Bitfinex (public REST, basic private REST, public web socket (tickers), private web socket (orders))
+- Bithumb (public REST)
+- Bitstamp (public REST)
+- Bittrex (public REST, basic private REST, public web socket (tickers))
+- Gemini (public REST, basic private REST)
+- GDAX (public REST, basic private REST)
+- Kraken (public REST, basic private REST)
+- Okex (basic public REST)
+- Poloniex (public REST, basic private REST, public web socket (tickers))
 
 The following cryptocurrency services are supported:
 - Cryptowatch (partial)
@@ -35,7 +52,13 @@ Console.WriteLine("On the Kraken exchange, 1 bitcoin is worth {0} USD.", ticker.
 api.LoadAPIKeys("keys.bin");
 
 /// place limit order for 0.01 bitcoin at ticker.Ask USD
-ExchangeOrderResult result = api.PlaceOrder("XXBTZUSD", 0.01m, ticker.Ask, true);
+ExchangeOrderResult result = api.PlaceOrder(new ExchangeOrderRequest
+{
+    Amount = 0.01m,
+    IsBuy = true,
+    Price = ticker.Ask,
+    Symbol = "XXBTZUSD"
+});
 
 // Kraken is a bit funny in that they don't return the order details in the initial request, so you have to follow up with an order details request
 //  if you want to know more info about the order - most other exchanges don't return until they have the order details for you.
@@ -46,23 +69,42 @@ result = api.GetOrderDetails(result.OrderId);
 
 Console.WriteLine("Placed an order on Kraken for 0.01 bitcoin at {0} USD. Status is {1}. Order id is {2}.", ticker.Ask, result.Result, result.OrderId);
 ```
+
+---
+Web socket example:
+---
+```
+public static void Main(string[] args)
+{
+    // create a web socket connection to Binance. Note you can Dispose the socket anytime to shut it down.
+    // the web socket will handle disconnects and attempt to re-connect automatically.
+    ExchangeBinanceAPI b = new ExchangeBinanceAPI();
+    using (var socket = b.GetTickersWebSocket((tickers) =>
+    {
+        Console.WriteLine("{0} tickers, first: {1}", tickers.Count, tickers.First());
+    }))
+    {
+        Console.WriteLine("Press ENTER to shutdown.");
+        Console.ReadLine();
+    }
+}
+```
 ---
 
-I do cryptocurrency consulting, please don't hesitate to contact me if you have a custom solution you would like me to implement (jjxtra@gmail.com).
+I do cryptocurrency consulting, please don't hesitate to contact me if you have a custom solution you would like me to implement (jeff@digitalruby.com).
 
-If this project has helped you in any way or you need support / questions answered, donations are always appreciated. I maintain this code for free and for the glory of the crypto revolution.
+If you want help with your project, have questions that need answering or this project has helped you in any way, I accept donations.
 
-Donation addresses...
+[![Donate with Bitcoin](https://en.cryptobadges.io/badge/small/1GBz8ithHvTqeRZxkmpHx5kQ9wBXuSH8AG)](https://en.cryptobadges.io/donate/1GBz8ithHvTqeRZxkmpHx5kQ9wBXuSH8AG)
 
-Paypal: jjxtra@gmail.com (pick the send to friends and family with bank account option to avoid fees)
+[![Donate with Litecoin](https://en.cryptobadges.io/badge/small/LWxRMaVFeXLmaq5munDJxADYYLv2szYi9i)](https://en.cryptobadges.io/donate/LWxRMaVFeXLmaq5munDJxADYYLv2szYi9i)
 
-Bitcoin: 1GBz8ithHvTqeRZxkmpHx5kQ9wBXuSH8AG  
-Ethereum: 0x0d9Fc4ef1F1fBF8696D276678ef9fA2B6c1a3433  
-Litecoin: LWxRMaVFeXLmaq5munDJxADYYLv2szYi9i  
-Vertcoin: Vcu6Fqh8MGiLEyyifNSCgoCuQShTijzwFx  
+[![Donate with Ethereum](https://en.cryptobadges.io/badge/small/0x77d3D990859a8c3e3486b5Ad63Da223f7F3778dc)](https://en.cryptobadges.io/donate/0x77d3D990859a8c3e3486b5Ad63Da223f7F3778dc)
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=L67Q4KQN5DHLY)
 
 Thanks for visiting!
 
 Jeff Johnson  
-jjxtra@gmail.com  
+jeff@digitalruby.com  
 http://www.digitalruby.com  

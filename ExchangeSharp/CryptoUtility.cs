@@ -20,10 +20,63 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 
+using Newtonsoft.Json.Linq;
+
 namespace ExchangeSharp
 {
     public static class CryptoUtility
     {
+        /// <summary>
+        /// Convert an object to string using invariant culture
+        /// </summary>
+        /// <param name="obj">Object</param>
+        /// <returns>String</returns>
+        public static string ToStringInvariant(this object obj)
+        {
+            return System.Convert.ToString(obj, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        /// <summary>
+        /// Convert an object to string uppercase using invariant culture
+        /// </summary>
+        /// <param name="obj">Object</param>
+        /// <returns>String</returns>
+        public static string ToStringUpperInvariant(this object obj)
+        {
+            return ToStringInvariant(obj).ToUpperInvariant();
+        }
+
+        /// <summary>
+        /// Convert an object to string lowercase using invariant culture
+        /// </summary>
+        /// <param name="obj">Object</param>
+        /// <returns>String</returns>
+        public static string ToStringLowerInvariant(this object obj)
+        {
+            return ToStringInvariant(obj).ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// Convert an object to another type invariant
+        /// </summary>
+        /// <typeparam name="T">Type</typeparam>
+        /// <param name="obj">Object</param>
+        /// <param name="defaultValue">Default value</param>
+        /// <returns>Converted value or defaultValue if not found in token</returns>
+        public static T ConvertInvariant<T>(this object obj, T defaultValue = default(T))
+        {
+            if (obj == null)
+            {
+                return defaultValue;
+            }
+            JValue jValue = obj as JValue;
+            if (jValue != null && jValue.Value == null)
+            {
+                return defaultValue;
+            }
+            return (T)System.Convert.ChangeType(jValue == null ? obj : jValue.Value, typeof(T), System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         public static string NormalizeSymbol(string symbol)
         {
             return symbol?.Replace("-", string.Empty).Replace("_", string.Empty).ToLowerInvariant();
@@ -64,7 +117,7 @@ namespace ExchangeSharp
         public static byte[] SecureStringToBytesBase64Decode(SecureString s)
         {
             string unsecure = SecureStringToString(s);
-            byte[] bytes = Convert.FromBase64String(unsecure);
+            byte[] bytes = System.Convert.FromBase64String(unsecure);
             unsecure = null;
             return bytes;
         }
@@ -117,7 +170,7 @@ namespace ExchangeSharp
 
         public static string SHA256SignBase64(string message, byte[] key)
         {
-            return Convert.ToBase64String(new HMACSHA256(key).ComputeHash(Encoding.UTF8.GetBytes(message)));
+            return System.Convert.ToBase64String(new HMACSHA256(key).ComputeHash(Encoding.UTF8.GetBytes(message)));
         }
 
         public static string SHA384Sign(string message, string key)
@@ -132,7 +185,7 @@ namespace ExchangeSharp
 
         public static string SHA384SignBase64(string message, byte[] key)
         {
-            return Convert.ToBase64String(new HMACSHA384(key).ComputeHash(Encoding.UTF8.GetBytes(message)));
+            return System.Convert.ToBase64String(new HMACSHA384(key).ComputeHash(Encoding.UTF8.GetBytes(message)));
         }
 
         public static string SHA512Sign(string message, string key)
@@ -156,7 +209,7 @@ namespace ExchangeSharp
             var hmac = new HMACSHA512(key);
             var messagebyte = Encoding.ASCII.GetBytes(message);
             var hashmessage = hmac.ComputeHash(messagebyte);
-            return Convert.ToBase64String(hashmessage);
+            return System.Convert.ToBase64String(hashmessage);
         }
 
         public static byte[] GenerateSalt(int length)
@@ -334,6 +387,29 @@ namespace ExchangeSharp
             }
             writer.Flush();
             File.WriteAllBytes(path, ProtectedData.Protect(memory.ToArray(), null, DataProtectionScope.CurrentUser));
+        }
+
+        /// <summary>
+        /// Round an amount appropriate to its quantity
+        /// </summary>
+        /// <param name="amount">Amount</param>
+        /// <returns>Rounded amount</returns>
+        /// <remarks>
+        /// Less than 1 : 7 decimal places
+        /// Less than 10 : 3 decimal places
+        /// Everything else : floor, no decimal places
+        /// </remarks>
+        public static decimal RoundAmount(decimal amount)
+        {
+            if (amount < 1.0m)
+            {
+                return Math.Round(amount, 7);
+            }
+            else if (amount < 10.0m)
+            {
+                return Math.Round(amount, 3);
+            }
+            return Math.Floor(amount);
         }
     }
 }
